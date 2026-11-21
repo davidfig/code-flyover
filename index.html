@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Semantic Zoom</title>
+  </head>
+  <body>
+    <header>
+      <div class="brand">Semantic Zoom</div>
+      <select id="picker"></select>
+      <div id="levels"></div>
+      <div class="spacer"></div>
+      <label><input type="checkbox" id="showAllImports" /> All imports</label>
+      <label><input type="checkbox" id="showImpacted" /> Importers of changed files</label>
+      <label><input type="checkbox" id="dimUnchanged" /> Dim unchanged</label>
+      <button id="fit">Whole map</button>
+    </header>
+    <main>
+      <div id="mapwrap">
+        <div id="crumbs"></div>
+        <div id="map"></div>
+        <div id="legend">
+          <span><i class="sw modified"></i>modified</span>
+          <span><i class="sw added"></i>new file</span>
+          <span><i class="sw deleted"></i>deleted</span>
+          <span><i class="sw impacted"></i>imports a changed file</span>
+          <span><i class="ln added"></i>new import</span>
+          <span><i class="ln violation"></i>breaks the model</span>
+          <span><i class="ln removed"></i>removed import</span>
+        </div>
+      </div>
+      <aside id="panel"><div id="panel-body"></div></aside>
+    </main>
+    <script type="module" src="/web/main.ts"></script>
+  </body>
+</html>

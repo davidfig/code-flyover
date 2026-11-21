@@ -1,0 +1,32 @@
+{
+  "name": "Golem Docs packages",
+  "source": "docs/architecture.md, the package table and goals 2 and 6",
+  "modules": [
+    { "id": "docx", "paths": ["docx/"], "description": "The document model (WordDocument) and the DOCX reader and writer" },
+    { "id": "ops", "paths": ["ops/"], "description": "Operations, undo and redo, replica, the collaboration protocol" },
+    { "id": "layout", "paths": ["layout/"], "description": "Pagination, line breaking, tables, floats" },
+    { "id": "editor", "paths": ["editor/"], "description": "Selection, commands and Editor.apply" },
+    { "id": "odt", "paths": ["odt/"], "description": "OpenDocument reader and writer" },
+    { "id": "pdf", "paths": ["pdf/"], "description": "PDF reader, editor and writer" },
+    { "id": "script", "paths": ["script/"], "description": "Scripts: API, stripper and linker, sandbox and runtime" },
+    { "id": "client", "paths": ["client/"], "description": "The app: UI, WebGL renderer, format handlers, storage" },
+    { "id": "server", "paths": ["server/"], "description": "The Worker: accounts, cloud documents, sharing, rooms, billing" }
+  ],
+  "allowed": {
+    "docx": [],
+    "ops": ["docx"],
+    "layout": ["docx"],
+    "editor": ["docx", "layout", "ops"],
+    "odt": ["docx"],
+    "pdf": [],
+    "script": [],
+    "client": ["docx", "ops", "layout", "editor", "odt", "pdf", "script"],
+    "server": ["docx", "ops"]
+  },
+  "noThirdParty": ["docx", "ops", "layout", "editor", "odt", "pdf", "script", "client"],
+  "rules": [
+    "Dependencies point one way: libraries never import client or server.",
+    "The editor core has no dependency on the server (goal 2).",
+    "The format, layout, editing and PDF libraries have no third-party runtime dependencies, and the client ships none from npm. New dependencies need approval (goal 6)."
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "semantic-zoom",
+  "version": "1.0.0",
+  "description": "Semantic zoom for code review: see where a change lands in the architecture, then zoom in.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "analyze": "tsx analyzer/cli.ts"
+  },
+  "license": "UNLICENSED",
+  "type": "module",
+  "dependencies": {
+    "pixi-viewport": "^7.0.3",
+    "pixi.js": "^8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.8"
+  },
+  "private": true
+}

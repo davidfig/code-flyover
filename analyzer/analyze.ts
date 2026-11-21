@@ -1,0 +1,359 @@
+import path from 'node:path/posix'
+import * as git from './git.ts'
+import { neededForDeps, RS_EXT, snapshotDeps, TS_EXT, type Dep } from './deps.ts'
+import { isAllowed, loadModel, moduleOf } from './model.ts'
+import type { Analysis, FileEdge, FileInfo, FileStatus, Finding } from '../shared/types.ts'
+
+export interface AnalyzeOptions {
+  repo: string
+  head: string
+  base: string
+  modelsDir: string
+  id?: string
+}
+
+const SKIP_DIR = /(^|\/)(node_modules|dist|build|target|vendor|public|generated|\.claude|coverage)\//
+const isCode = (f: string) => (TS_EXT.test(f) || RS_EXT.test(f)) && !SKIP_DIR.test(f) && !/\.min\.js$|\.d\.ts$/.test(f)
+const isTest = (f: string) => /(^|\/)(test|tests|__tests__|e2e|spec)\//.test(f) || /\.(test|spec)\.[cm]?[jt]sx?$/.test(f) || /_test\.rs$/.test(f)
+
+export function analyze(opts: AnalyzeOptions): Analysis {
+  const { repo } = opts
+  const repoName = path.basename(repo.replace(/\/$/, ''))
+  const headSha = git.revParse(repo, opts.head)
+  const baseSha = git.mergeBase(repo, git.revParse(repo, opts.base), headSha)
+
+  const headFiles = git.listFiles(repo, headSha)
+  const baseFiles = git.listFiles(repo, baseSha)
+  const diffFiles = git.diff(repo, baseSha, headSha)
+  const commits = git.commits(repo, baseSha, headSha)
+
+  const headContents = git.readFiles(repo, headSha, neededForDeps(headFiles))
+  const baseContents = git.readFiles(repo, baseSha, neededForDeps(baseFiles))
+  const headDeps = snapshotDeps({ files: new Set(headFiles), contents: headContents })
+  const baseDeps = snapshotDeps({ files: new Set(baseFiles), contents: baseContents })
+
+  // base path → head path, for renames
+  const renamed = new Map<string, string>()
+  for (const d of diffFiles) if (d.status === 'renamed' && d.oldPath) renamed.set(d.oldPath, d.path)
+  const toHead = (p: string) => renamed.get(p) ?? p
+  const diffByPath = new Map(diffFiles.map((d) => [d.path, d]))
+
+  // ---------- files on the map ----------
+  const mapPaths = headFiles.filter(isCode)
+  for (const d of diffFiles) if (d.status === 'deleted' && isCode(d.path)) mapPaths.push(d.path)
+  const { model, noThirdParty } = loadModel(opts.modelsDir, repoName, mapPaths)
+
+  const files: FileInfo[] = mapPaths.map((p) => {
+    const d = diffByPath.get(p)
+    const status: FileStatus = d ? d.status : 'unchanged'
+    const text = status === 'deleted' ? baseContents.get(p) : headContents.get(p)
+    return {
+      path: p,
+      oldPath: d?.status === 'renamed' ? d.oldPath : undefined,
+      module: moduleOf(model, p)!,
+      lines: text ? text.split('\n').length : 1,
+      status,
+      add: d?.add ?? 0,
+      del: d?.del ?? 0,
+      hunks: d && !d.binary ? d.hunks : undefined,
+      test: isTest(p),
+    }
+  })
+  const index = new Map(files.map((f, i) => [f.path, i]))
+  const changed = (f: FileInfo) => f.status !== 'unchanged'
+
+  // ---------- edges ----------
+  const edgeMap = new Map<string, FileEdge>()
+  const addEdges = (deps: Map<string, Dep[]>, which: 'head' | 'base') => {
+    for (const [from, list] of deps) {
+      const fi = index.get(which === 'base' ? toHead(from) : from)
+      if (fi === undefined) continue
+      for (const dep of list) {
+        const ti = index.get(which === 'base' ? toHead(dep.to) : dep.to)
+        if (ti === undefined || ti === fi) continue
+        const key = fi + '>' + ti
+        const e = edgeMap.get(key)
+        if (which === 'head') edgeMap.set(key, { from: fi, to: ti, state: 'added', line: dep.line, typeOnly: dep.typeOnly || undefined })
+        else if (e) { e.state = 'both'; delete e.line }
+        else edgeMap.set(key, { from: fi, to: ti, state: 'removed', line: dep.line, typeOnly: dep.typeOnly || undefined })
+      }
+    }
+  }
+  addEdges(headDeps.deps, 'head')
+  addEdges(baseDeps.deps, 'base')
+  const edges = [...edgeMap.values()]
+
+  // ---------- impact: files that transitively import a changed file ----------
+  const reverse = new Map<number, number[]>()
+  for (const e of edges) if (e.state !== 'removed') (reverse.get(e.to) ?? reverse.set(e.to, []).get(e.to)!).push(e.from)
+  const changedIdx = files.map((f, i) => (f.status === 'modified' || f.status === 'renamed' ? i : -1)).filter((i) => i >= 0)
+  const impactedSet = new Set<number>()
+  for (const i of changedIdx) for (const j of reverse.get(i) ?? []) impactedSet.add(j)
+  const impacted = [...impactedSet].filter((i) => !changed(files[i]))
+
+  // ---------- findings ----------
+  const findings: Finding[] = []
+  const evidence = (es: FileEdge[], n = 6) =>
+    es.slice(0, n).map((e) => `${files[e.from].path}: ${e.line ?? '→ ' + files[e.to].path}`).concat(es.length > n ? [`…and ${es.length - n} more`] : [])
+
+  // Module-level couplings
+  const modPairs = new Map<string, { from: string; to: string; base: FileEdge[]; head: FileEdge[]; added: FileEdge[] }>()
+  for (const e of edges) {
+    const a = files[e.from].module
+    const b = files[e.to].module
+    if (a === b) continue
+    const key = a + '>' + b
+    const p = modPairs.get(key) ?? modPairs.set(key, { from: a, to: b, base: [], head: [], added: [] }).get(key)!
+    if (e.state !== 'added') p.base.push(e)
+    if (e.state !== 'removed') p.head.push(e)
+    if (e.state === 'added') p.added.push(e)
+  }
+  for (const p of modPairs.values()) {
+    const allowed = isAllowed(model, p.from, p.to)
+    const target = { edge: { from: p.from, to: p.to }, paths: [...new Set(p.added.map((e) => files[e.from].path))].slice(0, 20) }
+    if (p.base.length === 0 && p.head.length > 0) {
+      const onlyTests = p.added.every((e) => files[e.from].test)
+      findings.push({
+        severity: allowed === false && !onlyTests ? 'violation' : 'warning',
+        kind: allowed === false ? 'forbidden-dependency' : 'new-coupling',
+        title:
+          allowed === false
+            ? `${p.from} now imports ${p.to}, which the architecture forbids${onlyTests ? ' (tests only)' : ''}`
+            : `New dependency: ${p.from} → ${p.to}`,
+        detail:
+          allowed === false
+            ? `${model.source} doesn't list ${p.to} among ${p.from}'s dependencies. ${p.head.length} import${p.head.length === 1 ? '' : 's'}.`
+            : `No file in ${p.from} imported ${p.to} before this branch. ${p.head.length} import${p.head.length === 1 ? '' : 's'} now${p.head.every((e) => e.typeOnly) ? ', all type-only' : ''}.`,
+        evidence: evidence(p.added),
+        target,
+      })
+    } else if (p.base.length > 0 && p.head.length === 0) {
+      findings.push({
+        severity: 'info',
+        kind: 'removed-coupling',
+        title: `Removed dependency: ${p.from} → ${p.to}`,
+        detail: `${p.from} no longer imports anything from ${p.to}.`,
+        target: { edge: { from: p.from, to: p.to } },
+      })
+    } else if (allowed === false && p.added.length > 0) {
+      findings.push({
+        severity: 'warning',
+        kind: 'deepens-violation',
+        title: `Deepens an existing violation: ${p.from} → ${p.to}`,
+        detail: `${p.from} already imported ${p.to} against the model (${p.base.length} imports before); this branch adds ${p.added.length}.`,
+        evidence: evidence(p.added),
+        target,
+      })
+    }
+  }
+
+  // New cycles, between modules and between folders
+  const cycleFindings = (groupOf: (i: number) => string, label: string, severity: 'warning' | 'info', limit: number) => {
+    const g = (state: 'base' | 'head') => {
+      const adj = new Map<string, Set<string>>()
+      for (const e of edges) {
+        if (state === 'base' ? e.state === 'added' : e.state === 'removed') continue
+        if (e.typeOnly) continue // erased at compile time: no runtime cycle
+        const a = groupOf(e.from)
+        const b = groupOf(e.to)
+        if (a !== b) (adj.get(a) ?? adj.set(a, new Set()).get(a)!).add(b)
+      }
+      return adj
+    }
+    const base = g('base')
+    const head = g('head')
+    const pathBetween = (adj: Map<string, Set<string>>, from: string, to: string): string[] | null => {
+      const prev = new Map<string, string>([[from, '']])
+      const queue = [from]
+      while (queue.length) {
+        const n = queue.shift()!
+        if (n === to) {
+          const out = [n]
+          let c = n
+          while (prev.get(c)) { c = prev.get(c)!; out.unshift(c) }
+          return out
+        }
+        for (const m of adj.get(n) ?? []) if (!prev.has(m)) { prev.set(m, n); queue.push(m) }
+      }
+      return null
+    }
+    let count = 0
+    const reported = new Set<string>()
+    for (const [a, outs] of head) {
+      for (const b of outs) {
+        if (base.get(a)?.has(b)) continue
+        const back = pathBetween(head, b, a)
+        if (!back) continue
+        if (pathBetween(base, a, b) && pathBetween(base, b, a)) continue // already in a cycle before
+        const cycle = [a, ...back]
+        const key = [...new Set(cycle)].sort().join('|')
+        if (reported.has(key)) continue
+        reported.add(key)
+        if (count++ >= limit) continue
+        const added = edges.filter((e) => e.state === 'added' && !e.typeOnly && groupOf(e.from) === a && groupOf(e.to) === b)
+        findings.push({
+          severity,
+          kind: 'new-cycle',
+          title: `New ${label} cycle: ${cycle.join(' → ')}`,
+          detail: `The new dependency ${a} → ${b} closes a loop: ${b} already reaches ${a}.`,
+          evidence: evidence(added, 3),
+          target: { paths: [...new Set(cycle)], focus: true },
+        })
+      }
+    }
+  }
+  cycleFindings((i) => files[i].module, 'module', 'warning', 10)
+  cycleFindings((i) => path.dirname(files[i].path), 'folder', 'info', 8)
+
+  // New third-party packages
+  const extByModule = (deps: Map<string, Dep[]>, mapPath: (p: string) => string) => {
+    const out = new Map<string, Map<string, { file: string; line: string }>>()
+    for (const [file, list] of deps) {
+      const i = index.get(mapPath(file))
+      if (i === undefined) continue
+      const f = files[i]
+      for (const d of list) {
+        if (d.to.startsWith('node:')) continue
+        const key = f.module + (f.test ? ' (tests)' : '')
+        const m = out.get(key) ?? out.set(key, new Map()).get(key)!
+        if (!m.has(d.to)) m.set(d.to, { file: f.path, line: d.line })
+      }
+    }
+    return out
+  }
+  const extHead = extByModule(headDeps.external, (p) => p)
+  const extBase = extByModule(baseDeps.external, toHead)
+  for (const [mod, pkgs] of extHead) {
+    for (const [pkg, where] of pkgs) {
+      if (extBase.get(mod)?.has(pkg)) continue
+      const moduleId = mod.replace(' (tests)', '')
+      const forbidden = noThirdParty.has(moduleId) && !mod.endsWith('(tests)')
+      findings.push({
+        severity: forbidden ? 'violation' : 'warning',
+        kind: 'new-package',
+        title: `${mod} imports a new package: ${pkg}`,
+        detail: forbidden ? `The model says ${moduleId} takes no third-party runtime dependencies.` : `First import of ${pkg} in ${mod}.`,
+        evidence: [`${where.file}: ${where.line}`],
+        target: { paths: [where.file] },
+      })
+    }
+  }
+  for (const d of diffFiles) {
+    if (!d.path.endsWith('package.json') || d.path.includes('node_modules/') || d.status === 'deleted') continue
+    const added = d.hunks.flatMap((h) => h.lines.filter((l) => l.t === '+' && /^\s*"[@\w][^"]*":\s*"[\^~>=<*\d]/.test(l.s)).map((l) => l.s.trim()))
+    if (added.length) {
+      findings.push({
+        severity: 'warning',
+        kind: 'manifest',
+        title: `${d.path} adds or changes ${added.length} dependency version${added.length === 1 ? '' : 's'}`,
+        evidence: added.slice(0, 8),
+      })
+    }
+  }
+
+  // Names that already exist elsewhere
+  const defRe = /\b(?:export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|class|const|let|interface|type|enum)|pub(?:\([^)]*\))?\s+(?:async\s+)?(?:fn|struct|enum|trait|type|const))\s+([A-Za-z_]\w{5,})/g
+  const defsHead = new Map<string, string[]>()
+  for (const f of files) {
+    if (f.status === 'deleted') continue
+    const src = headContents.get(f.path) ?? ''
+    for (const m of src.matchAll(defRe)) {
+      const list = defsHead.get(m[1]) ?? defsHead.set(m[1], []).get(m[1])!
+      if (!list.includes(f.path)) list.push(f.path)
+    }
+  }
+  const lang = (p: string) => (RS_EXT.test(p) ? 'rs' : 'ts')
+  const dupes: { name: string; file: string; others: string[] }[] = []
+  for (const f of files) {
+    if (!f.hunks || f.test) continue
+    const added = f.hunks.flatMap((h) => h.lines.filter((l) => l.t === '+').map((l) => l.s)).join('\n')
+    for (const m of added.matchAll(defRe)) {
+      const others = (defsHead.get(m[1]) ?? []).filter((p) => p !== f.path && lang(p) === lang(f.path) && files[index.get(p)!]?.module === f.module && !files[index.get(p)!]?.test)
+      const parallel = others.every((p) => path.basename(p) === path.basename(f.path)) // e.g. one file per locale
+      if (others.length && others.length < 5 && !parallel && !dupes.some((d) => d.name === m[1] && d.file === f.path)) dupes.push({ name: m[1], file: f.path, others })
+    }
+  }
+  for (const d of dupes.slice(0, 12)) {
+    findings.push({
+      severity: 'info',
+      kind: 'similar-name',
+      title: `${d.name} is new in ${path.basename(d.file)}, and already defined in ${d.others.length === 1 ? path.basename(d.others[0]) : d.others.length + ' other files'}`,
+      detail: 'Possible duplicate. Check whether the existing one could be reused.',
+      evidence: [d.file, ...d.others.slice(0, 4)],
+      target: { paths: [d.file, ...d.others.slice(0, 4)] },
+    })
+  }
+
+  // Footprint and reach
+  const touched = new Map<string, number>()
+  for (const f of files) if (changed(f)) touched.set(f.module, (touched.get(f.module) ?? 0) + 1)
+  const dirs = new Set(files.filter(changed).map((f) => path.dirname(f.path)))
+  if (touched.size) {
+    findings.push({
+      severity: 'info',
+      kind: 'footprint',
+      title: `Touches ${touched.size} module${touched.size === 1 ? '' : 's'} and ${dirs.size} folder${dirs.size === 1 ? '' : 's'}`,
+      detail: [...touched].sort((a, b) => b[1] - a[1]).map(([m, n]) => `${m} ${n}`).join(', ') + ' files changed.',
+      target: { paths: [...touched.keys()].map((m) => model.modules.find((x) => x.id === m)!.paths[0].replace(/\/$/, '')) },
+    })
+  }
+  const direct = new Map<number, number[]>()
+  for (const e of edges) if (e.state !== 'removed') (direct.get(e.to) ?? direct.set(e.to, []).get(e.to)!).push(e.from)
+  const reachOf = changedIdx
+    .filter((i) => !files[i].test)
+    .map((i) => ({ i, from: (direct.get(i) ?? []).filter((j) => !changed(files[j])) }))
+    .filter((r) => r.from.length >= 5)
+    .sort((a, b) => b.from.length - a.from.length)
+    .slice(0, 3)
+  for (const r of reachOf) {
+    const f = files[r.i]
+    const mods = new Set(r.from.map((j) => files[j].module))
+    findings.push({
+      severity: 'info',
+      kind: 'reach',
+      title: `${path.basename(f.path)} is imported by ${r.from.length} unchanged files${mods.size > 1 ? ` in ${mods.size} modules` : ''}`,
+      detail: `${f.path} changed (+${f.add} −${f.del}). Files that import it directly may need checking.`,
+      evidence: r.from.slice(0, 6).map((j) => files[j].path),
+      target: { paths: [f.path, ...r.from.slice(0, 30).map((j) => files[j].path)] },
+    })
+  }
+
+  // Source changed without tests in the same module
+  for (const [mod] of touched) {
+    const src = files.filter((f) => f.module === mod && changed(f) && !f.test)
+    const tests = files.filter((f) => f.module === mod && changed(f) && f.test)
+    if (src.length >= 3 && tests.length === 0) {
+      findings.push({
+        severity: 'info',
+        kind: 'no-tests',
+        title: `${mod}: ${src.length} source files changed, no tests changed`,
+        target: { paths: src.slice(0, 20).map((f) => f.path) },
+      })
+    }
+  }
+
+  const order = { violation: 0, warning: 1, info: 2 }
+  findings.sort((a, b) => order[a.severity] - order[b.severity])
+
+  const otherChanges = diffFiles
+    .filter((d) => !index.has(d.path))
+    .map((d) => ({ path: d.path, status: d.status as FileStatus, add: d.add, del: d.del }))
+
+  return {
+    id: opts.id ?? `${repoName}--${opts.head.replace(/[^\w.-]+/g, '-')}`,
+    repo: repoName,
+    head: opts.head,
+    base: opts.base,
+    headSha,
+    baseSha,
+    title: commits[commits.length - 1]?.subject ?? opts.head,
+    commits,
+    generatedAt: new Date().toISOString(),
+    model,
+    files,
+    edges,
+    impacted,
+    findings,
+    otherChanges,
+  }
+}
