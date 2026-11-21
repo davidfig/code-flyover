@@ -22,36 +22,46 @@
 html, body { margin: 0; height: 100%; overflow: hidden; }
 body { display: flex; flex-direction: column; }
 
+/* The header: brand, branch, where you are (breadcrumbs, taking the spare room), the Show menu, Whole map. */
 header {
-  display: flex; align-items: center; gap: 14px; padding: 8px 14px;
+  display: flex; align-items: center; gap: 12px; padding: 7px 14px; min-width: 0;
   border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px;
 }
-.brand { font-weight: 700; letter-spacing: 0.02em; }
-header select { font: inherit; padding: 3px 6px; max-width: 360px; }
-header label { display: flex; gap: 4px; align-items: center; color: var(--muted); white-space: nowrap; }
-header button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); background: white; border-radius: 6px; cursor: pointer; }
-.spacer { flex: 1; }
-#levels { display: flex; gap: 4px; align-items: center; color: var(--muted); }
-#levels span { padding: 2px 7px; border-radius: 10px; }
-#levels span.on { background: var(--ink); color: white; }
-#levels i { font-style: normal; opacity: 0.5; }
+.brand { font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
+header select { font: inherit; padding: 3px 6px; max-width: 300px; min-width: 0; }
+header button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); background: white; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+header button:hover { border-color: #c9c2b2; }
+#crumbs { flex: 1; min-width: 0; display: flex; align-items: center; overflow: hidden; white-space: nowrap; color: var(--muted); }
+#crumbs a { cursor: pointer; color: var(--ink); padding: 2px 4px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 2.5em; }
+#crumbs a:hover { background: var(--line); }
+#crumbs a:last-child { font-weight: 600; flex-shrink: 0; }
+#crumbs i { font-style: normal; color: var(--muted); margin: 0 2px; flex: none; }
+/* The Show menu: view options in two groups. */
+.menu { position: relative; }
+#showBtn .count { color: var(--select); font-weight: 600; }
+#showBtn .count:empty { display: none; }
+#showBtn .caret { margin-left: 5px; color: var(--muted); font-size: 0.85em; }
+.menu-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 240px; padding: 6px 0;
+  background: white; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(40, 35, 20, 0.16);
+}
+.menu-pop .group-title { padding: 4px 14px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.menu-pop label { display: flex; gap: 8px; align-items: center; padding: 5px 14px; cursor: pointer; white-space: nowrap; color: var(--ink); }
+.menu-pop label:hover { background: #f4f2ec; }
+.menu-pop .hint { margin-left: auto; padding-left: 12px; color: var(--muted); font-size: 11px; }
+.menu-pop hr { border: 0; border-top: 1px solid var(--line); margin: 6px 0; }
 
 main { flex: 1; display: flex; min-height: 0; }
-#mapwrap { flex: 1; position: relative; min-width: 0; }
-#map { position: absolute; inset: 0; overflow: hidden; }
+/* The map fills the column above the legend, which is a footer so it never covers the map. */
+#mapwrap { flex: 1; position: relative; min-width: 0; display: flex; flex-direction: column; }
+#map { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 #map canvas { display: block; }
-#crumbs {
-  position: absolute; z-index: 5; top: 8px; left: 10px; font-size: 12px;
-  background: rgba(251, 250, 246, 0.92); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px;
-}
-#crumbs a { cursor: pointer; color: var(--ink); }
-#crumbs a:hover { text-decoration: underline; }
-#crumbs i { font-style: normal; color: var(--muted); margin: 0 4px; }
+#map canvas.overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
 #legend {
-  position: absolute; z-index: 5; bottom: 8px; left: 10px; display: flex; gap: 12px; font-size: 11px; color: var(--muted);
-  background: rgba(251, 250, 246, 0.92); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px;
+  flex: none; display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11px; color: var(--muted);
+  background: var(--panel); border-top: 1px solid var(--line); padding: 5px 12px;
 }
-#legend span { display: flex; align-items: center; gap: 4px; }
+#legend span { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; }
 .sw.modified { background: var(--modified); }
 .sw.added { background: var(--added); }
@@ -76,18 +86,57 @@ main { flex: 1; display: flex; min-height: 0; }
 .st.modified, .st.renamed { background: var(--modified); }
 .st.deleted, .st.removed { background: var(--deleted); }
 
+/* A diff is laid out at a fixed width and scaled to its box (see drawDiffs), so its font size is fixed here.
+   It scrolls (the wheel over a selected file), with the scrollbar hidden: the map is the scrollbar's job. */
 .diff {
-  position: absolute; left: 0; top: 0; overflow: hidden; font-family: var(--mono); line-height: 1.35;
-  background: rgba(255, 255, 255, 0.94); border-top: 1px solid var(--line); padding: 4px 0;
+  position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: auto; scrollbar-width: none;
+  font: 12px/1.4 var(--mono); background: rgba(255, 255, 255, 0.95); border-top: 1px solid var(--line); padding: 4px 0;
+  /* Each diff's layout is its own: resizing or scrolling one never makes the browser re-lay out the others. */
+  contain: layout paint style;
 }
-.diff .l { white-space: pre; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; }
+.diff::-webkit-scrollbar { display: none; }
+/* The selected file's diff takes clicks (its expand buttons); the others let them through to the map. */
+.diff.selected { pointer-events: auto; }
+/* GitHub-style rows: old and new line numbers, a sign, then the code. Long lines wrap (no sideways scrolling),
+   and a wrapped line's continuation is indented so it reads as one line, not two. */
+.diff .l { display: grid; grid-template-columns: 4.5ch 4.5ch 2ch 1fr; }
+.diff .l .no { color: #a8a294; text-align: right; padding-right: 0.6ch; user-select: none; font-size: 0.92em; }
+.diff .l .sg { text-align: center; user-select: none; color: #8a857a; }
+.diff .l .code { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 8px 0 2ch; text-indent: -1.5ch; }
 .diff .l.a { background: #e3f4e8; }
-.diff .l.d { background: #fbe4e6; color: #7d2a33; }
-.diff .l.c { color: #6b675d; }
-.diff .hh { color: #8a7fb8; padding: 2px 6px; font-size: 0.9em; }
+.diff .l.a .no { background: #cdebd6; color: #5d8f6b; }
+.diff .l.a .sg { color: #2f7a3c; }
+.diff .l.d { background: #fbe4e6; }
+.diff .l.d .no { background: #f6cfd3; color: #a0656c; }
+.diff .l.d .sg { color: #b03a46; }
+.diff .l.d .code { opacity: 0.85; }
+.diff .l.c { color: #4a463e; }
+/* Syntax colours: the tokens highlight.ts makes. */
+.tk-keyword { color: #8a2f9c; }
+.tk-string { color: #2f7a3c; }
+.tk-comment { color: #8a857a; font-style: italic; }
+.tk-number { color: #b0561a; }
+.tk-type { color: #1f5ea8; }
+.tk-punct { color: #6b675d; }
+/* A hunk's header: its line range, and the function or class it sits in. */
+.diff .hh { display: flex; gap: 1.5ch; align-items: baseline; padding: 3px 8px; background: #eef1f8; color: #5b6b8c; border-top: 1px solid #dde3ef; border-bottom: 1px solid #dde3ef; }
+.diff .hh .range { font-size: 0.88em; color: #8a94ab; flex: none; }
+.diff .hh .ctx { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The hidden lines between hunks, with buttons to show more. */
+.diff .gap { display: flex; gap: 6px; align-items: center; padding: 2px 8px; background: #f4f2ec; color: var(--muted); font: 11px -apple-system, BlinkMacSystemFont, sans-serif; }
+.diff .gap button { font: inherit; padding: 1px 7px; border: 1px solid var(--line); border-radius: 4px; background: white; color: var(--select); cursor: pointer; }
+.diff .gap button:hover { border-color: var(--select); }
+.diff .gap .count { margin-left: 4px; }
 .diff .meta { color: var(--muted); padding: 6px; font-family: -apple-system, sans-serif; }
 
-#panel { width: 400px; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; font-size: 13px; }
+/* The divider between the map and the side panel: drag it (or use the arrow keys) to resize the panel. */
+#splitter { flex: none; width: 6px; margin: 0 -3px; position: relative; z-index: 6; cursor: col-resize; touch-action: none; }
+#splitter::after { content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background 0.12s; }
+#splitter:hover::after, #splitter.dragging::after, #splitter:focus-visible::after { background: var(--select); }
+#splitter:focus-visible { outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing #map { pointer-events: none; }
+#panel { flex: none; width: 400px; border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto; font-size: 13px; }
 #panel section { padding: 12px 16px; border-bottom: 1px solid var(--line); }
 #panel h1 { font-size: 15px; margin: 0 0 4px; line-height: 1.3; }
 #panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; display: flex; align-items: center; gap: 8px; }
@@ -100,6 +149,7 @@ details summary { cursor: pointer; color: var(--muted); margin-top: 6px; font-si
 ul.commits, ul.rules, ul.other { margin: 6px 0 0; padding-left: 18px; font-size: 12px; }
 ul.commits code { color: var(--muted); }
 .model { font-weight: 600; }
+#panel .model + .src { margin-bottom: 8px; }
 .tag { font-size: 10px; font-weight: 600; text-transform: uppercase; padding: 1px 5px; border-radius: 3px; background: var(--line); color: var(--muted); }
 .model.intended .tag { background: #dfe9f7; color: #2c5aa0; }
 
@@ -127,3 +177,34 @@ ul.edges li { margin-bottom: 4px; word-break: break-all; }
 ul.edges code { display: block; color: var(--muted); font-size: 11px; }
 .panel-diff { position: static; font-size: 11px; max-height: 480px; overflow: auto; border: 1px solid var(--line); }
 .empty { padding: 20px; color: var(--muted); }
+
+/* What changed: cards on the zoomed-out map, and the list in the panel. */
+.changes { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 4; transition: opacity 0.12s; }
+.change-card {
+  position: absolute; left: 0; top: 0; pointer-events: auto; cursor: pointer; will-change: transform;
+  max-width: 190px; text-align: left; font: 600 12px/1.3 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  color: var(--ink); background: rgba(255, 255, 255, 0.95); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 9px 6px 7px; box-shadow: 0 2px 8px rgba(40, 35, 20, 0.14); display: flex; gap: 7px; align-items: flex-start;
+}
+.change-card { transition: opacity 0.18s; }
+.change-card.covered { opacity: 0; pointer-events: none; }
+.change-card:hover { border-color: var(--select); box-shadow: 0 2px 12px rgba(31, 111, 235, 0.25); }
+.change-card .n, .change .n {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; border-radius: 9px;
+  font-size: 11px; font-weight: 700; color: white; background: var(--ink);
+}
+.change-card.gap { border-color: var(--warning); }
+.change-card.gap .n, .change.gap .n { background: var(--warning); }
+.tag.ai { background: #efe7f9; color: #6a3fa0; text-transform: none; letter-spacing: 0; cursor: help; }
+ol.changes-list { list-style: none; margin: 0; padding: 0; }
+.change { padding: 7px 8px; margin-bottom: 6px; border-radius: 6px; background: white; border: 1px solid transparent; cursor: pointer; }
+.change:hover { background: #f1efe8; }
+.change.active { outline: 2px solid var(--select); }
+.change .ct { font-weight: 600; display: flex; gap: 7px; align-items: flex-start; line-height: 1.3; }
+.change .cs { color: #4a463e; margin: 3px 0 0 25px; font-size: 12px; line-height: 1.4; }
+.change .cf { color: var(--muted); margin: 3px 0 0 25px; font-size: 11px; }
+.change.gap { border-color: var(--warning); }
+.change .ev { margin: 4px 0 0 25px; padding: 0; list-style: none; }
+.change .ev code { font-size: 11px; }
+.partofs { font-size: 12px; margin-top: 4px; color: var(--muted); }
+.partofs a { color: var(--select); cursor: pointer; }

@@ -24,9 +24,21 @@ export interface FileInfo {
   add: number
   del: number
   hunks?: Hunk[]
+  /**
+   * The whole file, for changed files only: at head, or at base for a deleted file. The diff view uses it to
+   * show the lines around a hunk and to highlight the file as one piece.
+   */
+  text?: string
   /** true when this file is a test */
   test: boolean
+  /**
+   * What the file is for. Only 'source' changes count toward the footprint;
+   * tests, translations and generated files stay on the map but are muted.
+   */
+  role: FileRole
 }
+
+export type FileRole = 'source' | 'test' | 'locale' | 'generated'
 
 export type EdgeState = 'both' | 'added' | 'removed'
 
@@ -102,6 +114,32 @@ export interface Analysis {
   findings: Finding[]
   /** changed files the map leaves out (docs, assets, locales), by kind */
   otherChanges: { path: string; status: FileStatus; add: number; del: number }[]
+  /** what the branch does, in words, for the zoomed-out map (AI-written; absent if not generated) */
+  changes?: ChangeSet
+}
+
+/** A hunk's id: "<path>#<1-based hunk number>". */
+export type HunkId = string
+
+export interface Change {
+  title: string
+  summary: string
+  hunks: HunkId[]
+  /** the files those hunks are in */
+  files: string[]
+}
+
+export interface ChangeSet {
+  /** who wrote the descriptions: the model id */
+  by: string
+  generatedAt: string
+  /** the head commit they describe (reused while it doesn't change) */
+  headSha: string
+  items: Change[]
+  /** source hunks no description covers: the gaps a reviewer must read for themselves */
+  undescribed: HunkId[]
+  /** hunk ids the model cited that don't exist (dropped from the items) */
+  invalid: HunkId[]
 }
 
 export interface AnalysisIndexEntry {

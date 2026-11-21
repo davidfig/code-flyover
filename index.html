@@ -8,17 +8,30 @@
   <body>
     <header>
       <div class="brand">Semantic Zoom</div>
-      <select id="picker"></select>
-      <div id="levels"></div>
-      <div class="spacer"></div>
-      <label><input type="checkbox" id="showAllImports" /> All imports</label>
-      <label><input type="checkbox" id="showImpacted" /> Importers of changed files</label>
-      <label><input type="checkbox" id="dimUnchanged" /> Dim unchanged</label>
-      <button id="fit">Whole map</button>
+      <select id="picker" aria-label="Branch"></select>
+      <nav id="crumbs" aria-label="Where you are on the map"></nav>
+      <div class="menu">
+        <button id="showBtn" aria-haspopup="true" aria-expanded="false" aria-controls="showMenu">Show <span class="count" id="showCount"></span><span class="caret">▾</span></button>
+        <div id="showMenu" class="menu-pop" role="menu" hidden>
+          <div class="group" role="group" aria-label="Files">
+            <div class="group-title">Files</div>
+            <label role="menuitemcheckbox"><input type="checkbox" id="showUnchanged" /> Unchanged files <span class="hint">whole repo</span></label>
+            <label role="menuitemcheckbox"><input type="checkbox" id="showTests" /> Tests</label>
+            <label role="menuitemcheckbox"><input type="checkbox" id="showLocales" /> Translations</label>
+          </div>
+          <hr />
+          <div class="group" role="group" aria-label="Highlight">
+            <div class="group-title">Highlight</div>
+            <label role="menuitemcheckbox"><input type="checkbox" id="showAllImports" /> All imports</label>
+            <label role="menuitemcheckbox"><input type="checkbox" id="showImpacted" /> Importers of changed files</label>
+            <label role="menuitemcheckbox"><input type="checkbox" id="dimUnchanged" /> Dim unchanged files</label>
+          </div>
+        </div>
+      </div>
+      <button id="fit" title="Show the whole map">Whole map</button>
     </header>
     <main>
       <div id="mapwrap">
-        <div id="crumbs"></div>
         <div id="map"></div>
         <div id="legend">
           <span><i class="sw modified"></i>modified</span>
@@ -28,8 +41,10 @@
           <span><i class="ln added"></i>new import</span>
           <span><i class="ln violation"></i>breaks the model</span>
           <span><i class="ln removed"></i>removed import</span>
+          <span>Click a file or folder to see its imports</span>
         </div>
       </div>
+      <div id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize the side panel" tabindex="0" title="Drag to resize · double-click to reset"></div>
       <aside id="panel"><div id="panel-body"></div></aside>
     </main>
     <script type="module" src="/web/main.ts"></script>
