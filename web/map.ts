@@ -4,14 +4,17 @@
 // with their box.
 // No rendering or camera library: see web/gl/.
 
-import type { Analysis, FileEdge, FileInfo, FileRole } from '../shared/types.ts'
+import type { Analysis, ChangeSet, FileEdge, FileInfo, FileRole } from '../shared/types.ts'
 import { buildMap, COL_W, roleOf, type MapNode } from './layout.ts'
 import { Camera, type Rect } from './gl/camera.ts'
 import { attachInput } from './gl/input.ts'
 import { rgba } from './gl/program.ts'
 import { RectLayer } from './gl/rects.ts'
 import { Shapes } from './gl/shapes.ts'
-import { renderDiffView } from './diffView.ts'
+import { DiffText } from './text/diffText.ts'
+import { FrameTiming } from './perf.ts'
+import { TextCache } from './gl/textCache.ts'
+import type { Placement } from './gl/text.ts'
 
 /** A node opens (shows its children) once it is this many pixels on its short side. */
 const OPEN_PX = 170
@@ -20,31 +23,30 @@ const OPEN_PX = 170
  * together, and a bigger box shows more of its file rather than bigger letters. The size is a scale of the
  * 12px text the CSS sets: 1 when a file of the median width is DIFF_W px wide on screen.
  */
-const DIFF_W = 560
-/** Text this small isn't drawn; it fades in up to DIFF_TEXT_FULL (about 3px to 7px text). */
+const DIFF_W = COL_W // text at its normal size when a file column is its laid-out width (100 characters of code)
+/**
+ * Diff text is drawn at every zoom, however small (it's what the boxes are made of). Between these scales (about 3px
+ * to 7px text) it becomes readable: headings fade out, the selected file's label gives way to the header, and clicks
+ * go to the text (see readable).
+ */
 const DIFF_TEXT_FROM = 0.25
 const DIFF_TEXT_FULL = 0.55
-/**
- * Diffs are switched on (invisibly) from DIFF_WARM_FROM, a few per frame, so they're already painted when the text
- * appears; and stay on until the text scale drops below DIFF_WARM_OFF.
- */
-const DIFF_WARM_FROM = DIFF_TEXT_FROM * 0.55
-const DIFF_WARM_OFF = DIFF_TEXT_FROM * 0.4
-const DIFF_WARM_PER_FRAME = 2
-/** Past this the text stops growing and more of each line shows instead. */
-const DIFF_MAX_SCALE = 1.6
-/** Text px at the top of a file's box kept for its label (see drawDiffs). */
-const FILE_LABEL_ROOM = 22
-/** A box narrower than this many characters of text stays a coloured block. */
-const DIFF_MIN_CHARS = 30 // the line-number gutter takes about 11 of them
-const CHAR_PX = 7.2 // a 12px monospace character
+/** Glyphs drawn into the cached picture being built per frame (see buildSlice): about 2 ms of GPU time. */
+const CACHE_GLYPHS_PER_FRAME = 300_000
+/** While new text keeps arriving, the cached picture is redrawn at most this often. */
+const CACHE_REBUILD_MS = 400
+/** The deepest zoom: text at this many times its normal size (it scales with its box, so it never re-wraps). */
+const TEXT_MAX_SCALE = 3
 /** Labels fade in between these widths, instead of popping. */
 const LABEL_FROM_PX = 40
 const LABEL_FULL_PX = 72
 /** Wheel events further apart than this start a new gesture (as in gl/input.ts). */
 const WHEEL_GESTURE_GAP_MS = 200
-/** How long after the camera stops the text goes back from GPU layers to sharp rendering. */
-const SETTLE_MS = 160
+/** A heading tag whose box is less than this much on screen stays when diff text shows: it says where you are. */
+const HEADING_KEEP_VISIBLE = 0.5
+/** A tag's padding and border (style.css .label): horizontal and vertical, CSS px. */
+const TAG_PAD_X = 10
+const TAG_PAD_Y = 4
 /** The selected box's outline, in CSS px. */
 const SELECT_PX = 3
 /** How long the camera takes to fly to something. */
@@ -53,7 +55,6 @@ const FLY_MS = 650
 export type Level = 'System' | 'Module' | 'Folder' | 'File' | 'Diff'
 
 export interface MapOptions {
-  showAllImports: boolean
   showImpacted: boolean
   dimUnchanged: boolean
   /** tests (unit and e2e) on the map */
@@ -62,6 +63,8 @@ export interface MapOptions {
   showLocales: boolean
   /** files the branch doesn't touch on the map */
   showUnchanged: boolean
+  /** the frame-timing readout (see perf.ts) */
+  showTiming: boolean
 }
 
 export interface MapEvents {
@@ -89,17 +92,20 @@ interface ChangeCard {
   h: number
 }
 
-/** A file's diff element. Built once (ahead of time, see prebuildDiffs) and hidden rather than removed. */
-interface DiffEl {
-  el: HTMLElement
-  /** its text scale */
+/** A file's text on screen this frame (drawn on the GPU, see text/diffText.ts): its scroll, and where it went. */
+interface TextState {
+  /** text scale: device-independent px per text px */
   k: number
-  /** how much of the box is above the window, in text px */
+  /** how much of the box's text area is above the window, text px */
   hidden: number
-  /** how far the reader has scrolled it, on top of what moving the box does */
+  /** how far the reader has scrolled it, on top of what moving the box does, text px */
   offset: number
-  /** on screen this frame */
-  shown: boolean
+  /** the visible text area's height, text px */
+  visH: number
+  /** where it was drawn: the visible text area, and where text px (0, 0) is, in CSS px on the map (null: not drawn) */
+  clip: { x: number; y: number; w: number; h: number } | null
+  originX: number
+  originY: number
 }
 
 interface View {
@@ -121,10 +127,18 @@ const C = {
   added: 0x3f9e64,
   deleted: 0xc8414f,
   impacted: 0x9fc3e3,
+  // Box fills that match the diff text's row colours (see text/layout.ts): added, removed, unchanged lines.
+  addedFill: 0xd3ecd9,
+  removedFill: 0xf6d3d7,
+  contextFill: 0xf6f4ee,
+  deletedBorder: 0xe39aa3,
+  impactedFill: 0xd9e6f3,
   edgeAdded: 0xd9822b,
   edgeViolation: 0xc8414f,
   edgeRemoved: 0x7a6fb0,
-  edgeAll: 0x8a8578,
+  // A selected file's neighbours, outlined (see drawSelection; style.css .sw.imports/.importers match).
+  imports: 0x1a9a8a,
+  importers: 0x8a5cc8,
   select: 0x1f6feb,
 }
 
@@ -143,10 +157,6 @@ function setStyle(el: HTMLElement, prop: 'transform' | 'width' | 'height' | 'max
 }
 function setClass(el: HTMLElement, value: string) {
   if (el.className !== value) el.className = value
-}
-/** Sets scrollTop only when it moves by a pixel or more (a write forces a layout). */
-function setScroll(el: HTMLElement, top: number) {
-  if (Math.abs(el.scrollTop - top) >= 1) el.scrollTop = top
 }
 const px = (v: number) => `${Math.round(v * 2) / 2}px`
 
@@ -201,8 +211,10 @@ export class ZoomMap {
   ancestors: MapNode[][] = []
   impacted = new Set<number>()
   violations = new Set<string>()
-  opts: MapOptions = { showAllImports: false, showImpacted: true, dimUnchanged: false, showTests: false, showLocales: false, showUnchanged: false }
+  opts: MapOptions = { showImpacted: true, dimUnchanged: false, showTests: false, showLocales: false, showUnchanged: false, showTiming: false }
   selected: MapNode | null = null
+  /** the selected file's neighbours on the map (see linksOf) */
+  private linked: { imports: MapNode[]; importers: MapNode[] } = { imports: [], importers: [] }
   highlight: MapNode[] = []
   highlightEdge: { from: string; to: string } | null = null
   focus = false
@@ -215,7 +227,6 @@ export class ZoomMap {
   private rects!: RectLayer
   private shapes!: Shapes
   private labels: HTMLElement
-  private diffs: HTMLElement
   private labelPool: HTMLElement[] = []
   private changesLayer: HTMLElement
   private cards: ChangeCard[] = []
@@ -225,23 +236,24 @@ export class ZoomMap {
   private fitScale = 1
   /** looking at something (a change, a finding): the cards step aside until Esc or Whole map */
   private zoomed = false
-  /**
-   * Diffs on screen, by file index. Each is drawn only over the part of its box that's on screen (see drawDiffs):
-   * `k` is its text scale, `hidden` how much of the box is above the window (in text px), and `offset` how far
-   * the reader has scrolled it, on top of what moving the box does.
-   */
-  private diffEls = new Map<number, DiffEl>()
-  /** bumped on every load, so a pre-build still running for the last analysis stops */
+  /** the diff text, on the GPU, laid out by a worker */
+  private text!: DiffText
+  private timing!: FrameTiming
+  /** a picture of all the small diff text, drawn once per zoom level (see textCache.ts) */
+  private cache!: TextCache
+  /** a frame booked for when the cache throttle allows a rebuild */
+  private cacheTimer: ReturnType<typeof setTimeout> | null = null
+  /** each file's node, by index into analysis.files */
+  private nodeByFile = new Map<number, MapNode>()
+  /** each file's text on screen, by file index */
+  private textStates = new Map<number, TextState>()
+  /** bumped on every load, so a pre-fetch still running for the last analysis stops */
   private buildGeneration = 0
   /** median file width in world units: what the diff text size is measured against */
   private medianFileW = 1
   private pending = false
   private lastFrame = 0
   private lastLevel = ''
-  private lastCamera = ''
-  /** diffs are switched on (warming up or showing): see drawDiffs */
-  private textWarm = false
-  private settleTimer: ReturnType<typeof setTimeout> | null = null
   /** the current wheel gesture: when its last event came, and the file it's scrolling (null: the map) */
   private wheelGesture = { last: -Infinity, file: null as number | null }
   private userMoved = false
@@ -249,8 +261,6 @@ export class ZoomMap {
   constructor(private host: HTMLElement, private events: MapEvents) {
     this.labels = document.createElement('div')
     this.labels.className = 'labels'
-    this.diffs = document.createElement('div')
-    this.diffs.className = 'diffs'
     this.changesLayer = document.createElement('div')
     this.changesLayer.className = 'changes'
   }
@@ -260,13 +270,19 @@ export class ZoomMap {
     if (!gl) throw new Error('WebGL 2 is not available')
     this.gl = gl
     this.rects = new RectLayer(gl)
+    // New text from the worker: the cached picture is out of date (redrawn, throttled, on the next frames).
+    this.text = new DiffText(gl, () => {
+      this.cache.dirty = true
+      this.schedule()
+    })
+    this.timing = new FrameTiming(this.host, gl, () => this.text.stats)
+    this.cache = new TextCache(gl)
     const overlayGl = this.overlay.getContext('webgl2', { antialias: true, premultipliedAlpha: true, alpha: true })
     if (!overlayGl) throw new Error('WebGL 2 is not available')
     this.overlayGl = overlayGl
     this.shapes = new Shapes(overlayGl)
     this.overlay.className = 'overlay'
     this.host.appendChild(this.canvas)
-    this.host.appendChild(this.diffs)
     this.host.appendChild(this.overlay)
     this.host.appendChild(this.labels)
     this.host.appendChild(this.changesLayer)
@@ -276,6 +292,7 @@ export class ZoomMap {
         this.schedule()
       },
       click: (x, y, double) => {
+        if (!double && this.clickText(x, y)) return // a gap bar's button in the selected file's text
         const w = this.camera.toWorld(x, y)
         const n = this.hit(w.x, w.y)
         if (double && n) {
@@ -285,7 +302,7 @@ export class ZoomMap {
         } else if (n && n === this.selected) this.clearSelection() // clicking the selected box again unselects it
         else this.select(n)
       },
-      wheel: (e, _x, _y, _dx, dy) => this.scrollDiff(e, dy),
+      wheel: (e, x, y, _dx, dy) => this.scrollText(e, x, y, dy),
     })
     const resize = () => {
       const c = this.camera
@@ -305,7 +322,7 @@ export class ZoomMap {
       }
       if (this.a) this.drawBoxes() // borders are a device pixel, which depends on dpr
       if (!this.userMoved && this.root) this.fitAll(false)
-      if (this.a) this.frame()
+      this.frame() // straight away: the resize wiped the canvas (and before a branch loads, it clears it to the background)
       this.schedule()
     }
     new ResizeObserver(resize).observe(this.host)
@@ -317,7 +334,7 @@ export class ZoomMap {
     const hide = new Set<FileRole>()
     if (!this.opts.showTests) hide.add('test')
     if (!this.opts.showLocales) hide.add('locale')
-    // The column layout takes the map's shape and sizes its label strips for the whole-map view.
+    // The column layout takes the map's shape.
     const view = { width: this.camera.width, height: this.camera.height }
     const m = buildMap(a, hide, this.opts.showUnchanged ? undefined : touched(a, this.opts.showImpacted, hide), view)
     this.root = m.root
@@ -335,17 +352,23 @@ export class ZoomMap {
       a.findings.filter((f) => f.kind === 'forbidden-dependency' || f.kind === 'deepens-violation').map((f) => `${f.target!.edge!.from}>${f.target!.edge!.to}`),
     )
     this.selected = null
+    this.linked = { imports: [], importers: [] }
     this.highlight = []
     this.highlightEdge = null
     this.focus = false
-    for (const { el } of this.diffEls.values()) el.remove()
-    this.diffEls.clear()
+    this.textStates.clear()
+    this.cache.reset()
+    this.nodeByFile = new Map(this.fileNodes.map((n) => [n.file!, n]))
     this.buildGeneration++
     const widths = this.fileNodes.map((n) => n.w).sort((x, y) => x - y)
     // In the column view boxes widen to fill space, but the text shouldn't grow with them: measure it against the
     // column width. In the treemap, against the median file.
     this.medianFileW = this.opts.showUnchanged ? (widths[Math.floor(widths.length / 2)] ?? 1) : COL_W
-    this.prebuildDiffs()
+    // Text scales with its box at every zoom (so a line always wraps at the same place); the deepest zoom stops it
+    // at TEXT_MAX_SCALE times its normal size.
+    this.camera.maxScale = (TEXT_MAX_SCALE * DIFF_W) / this.medianFileW
+    this.text.setFiles(this.fileNodes.filter((n) => a.files[n.file!].hunks?.length).map((n) => ({ id: n.file!, file: a.files[n.file!] })))
+    this.prefetchText()
     this.drawBoxes()
     this.buildCards()
     this.userMoved = false
@@ -365,6 +388,14 @@ export class ZoomMap {
     this.highlight = nodes
     this.highlightEdge = null
     this.focus = false
+    this.schedule()
+  }
+
+  /** New change descriptions (written from the side panel): rebuild the cards without touching the view. */
+  setChanges(cs: ChangeSet | undefined) {
+    this.a.changes = cs
+    this.buildCards()
+    this.cardsPlaced = false
     this.schedule()
   }
 
@@ -479,6 +510,7 @@ export class ZoomMap {
     const relayout =
       changes('showTests') || changes('showLocales') || changes('showUnchanged')
     Object.assign(this.opts, o)
+    this.timing.enabled = this.opts.showTiming
     // Showing or hiding files changes the layout.
     if (relayout && this.a) return this.load(this.a)
     this.drawBoxes()
@@ -521,8 +553,8 @@ export class ZoomMap {
     this.highlight = []
     this.highlightEdge = null
     this.focus = false
-    const d = n.file !== undefined ? this.diffEls.get(n.file) : undefined
-    if (d) d.offset = 0
+    const st = n.file !== undefined ? this.textStates.get(n.file) : undefined
+    if (st) st.offset = 0
     // A negative margin: the box is a few px wider than the window and starts a few px above it, so its selection
     // outline (SELECT_PX, drawn inside the box's edge) sits just off screen instead of framing the text.
     this.camera.flyTo(this.camera.fittedWidth({ x: n.x, y: n.y, w: n.w, h: n.h }, -(SELECT_PX + 1)), FLY_MS)
@@ -540,8 +572,35 @@ export class ZoomMap {
 
   select(n: MapNode | null) {
     this.selected = n
+    this.linked = this.linksOf(n)
     this.events.onSelect(n)
     this.schedule()
+  }
+
+  /** The boxes a selected file imports, and those that import it (not imports the branch removed). */
+  private linksOf(n: MapNode | null): { imports: MapNode[]; importers: MapNode[] } {
+    const out = { imports: [] as MapNode[], importers: [] as MapNode[] }
+    if (!n || n.kind !== 'file') return out
+    for (const e of this.a.edges) {
+      if (e.state === 'removed') continue
+      const other = e.from === n.file ? e.to : e.to === n.file ? e.from : -1
+      const node = other >= 0 && other !== n.file ? this.nodeByFile.get(other) : undefined
+      if (node) (e.from === n.file ? out.imports : out.importers).push(node)
+    }
+    return out
+  }
+
+  /** The side panel's import list: select a file and fly to it. */
+  goToFile(file: number) {
+    const n = this.nodeByFile.get(file)
+    if (!n) return
+    this.zoomTo([n])
+    this.select(n)
+  }
+
+  /** Whether a file is on the map (hidden ones, like tests with Tests off, have no box). */
+  hasFile(file: number) {
+    return this.nodeByFile.has(file)
   }
 
   nodeFor(path: string): MapNode | undefined {
@@ -571,18 +630,20 @@ export class ZoomMap {
       const info = this.a.files[n.file!]
       let color = info.test ? C.fileTest : C.file
       let alpha = dim ? 0.35 : 1
-      if (this.opts.showImpacted && this.impacted.has(n.file!)) { color = C.impacted; alpha = 1 }
+      if (this.opts.showImpacted && this.impacted.has(n.file!)) { color = C.impactedFill; alpha = 1 }
       if (info.status !== 'unchanged' && roleOf(info) !== 'source') {
         // Tests, translations, generated files: no tint (a faint one still reads as "modified" from far out).
         r.add(n.x, n.y, n.w, n.h, rgba(info.test ? C.fileTest : C.file, dim ? 0.35 : 1))
         continue
       }
-      if (info.status === 'added') { color = C.added; alpha = 1 }
+      // Coloured like their diff looks when its text fades in: the light green of added rows, the light pink of
+      // removed ones, and for a modified file a mix of those and the near-white of unchanged lines, in proportion.
+      if (info.status === 'added') { color = C.addedFill; alpha = 1 }
       else if (info.status === 'modified' || info.status === 'renamed') {
-        color = C.modified
-        alpha = 0.45 + 0.55 * Math.min(1, (info.add + info.del) / Math.max(30, info.lines * 0.6))
+        color = diffTint(info)
+        alpha = 1
       } else if (info.status === 'deleted') {
-        r.addBox(n.x, n.y, n.w, n.h, rgba(C.deleted, 0.25), rgba(C.deleted), dpr)
+        r.addBox(n.x, n.y, n.w, n.h, rgba(C.removedFill), rgba(C.deletedBorder), dpr)
         continue
       }
       r.add(n.x, n.y, n.w, n.h, rgba(color, alpha))
@@ -597,7 +658,9 @@ export class ZoomMap {
       const dt = this.lastFrame ? Math.min(50, now - this.lastFrame) : 16.7
       this.lastFrame = now
       const moving = this.camera.step(now, dt)
+      this.timing.begin(now)
       this.frame()
+      this.timing.end(now)
       if (moving) this.schedule()
       else this.lastFrame = 0
     })
@@ -622,9 +685,16 @@ export class ZoomMap {
   }
 
   private frame() {
-    if (!this.a) return
+    // The canvas is opaque: until something is drawn it shows black. So it's cleared to the map's background even
+    // before a branch has loaded (the first frames, while its analysis is still arriving).
+    if (!this.a) {
+      const gl = this.gl
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height)
+      gl.clearColor(((C.bg >> 16) & 255) / 255, ((C.bg >> 8) & 255) / 255, (C.bg & 255) / 255, 1)
+      gl.clear(gl.COLOR_BUFFER_BIT)
+      return
+    }
     const cam = this.camera
-    this.noteMotion()
     const v = cam.view
     const vb: View = { x: v.x, y: v.y, width: v.w, height: v.h }
     const s = cam.scale
@@ -633,6 +703,9 @@ export class ZoomMap {
     gl.clearColor(((C.bg >> 16) & 255) / 255, ((C.bg >> 8) & 255) / 255, (C.bg & 255) / 255, 1)
     gl.clear(gl.COLOR_BUFFER_BIT)
     this.rects.render(cam)
+    const { level, trail } = this.level(vb)
+    const path = new Set(trail)
+    this.drawText(vb, s, path)
     const og = this.overlayGl
     og.viewport(0, 0, this.overlay.width, this.overlay.height)
     og.clearColor(0, 0, 0, 0)
@@ -640,31 +713,13 @@ export class ZoomMap {
     this.drawEdges()
     this.drawSelection()
     this.shapes.flush(this.overlay.width, this.overlay.height)
-    const { level, trail } = this.level(vb)
-    const path = new Set(trail)
     this.drawLabels(vb, s, path)
-    this.drawDiffs(vb, s, path)
     this.drawCards(vb, s)
     const key = level + trail.map((n) => n.id).join(',')
     if (key !== this.lastLevel) {
       this.lastLevel = key
       this.events.onView(level, trail)
     }
-  }
-
-  /**
-   * While the camera moves, the text layers are GPU layers (#map.moving, see style.css): scaling one is then
-   * moving a picture, not re-rendering every line of code each frame. Shortly after it stops they go back to
-   * ordinary layers and render once, sharp.
-   */
-  private noteMotion() {
-    const c = this.camera
-    const key = `${c.x.toFixed(3)},${c.y.toFixed(3)},${c.scale.toFixed(5)}`
-    if (key === this.lastCamera) return
-    this.lastCamera = key
-    this.host.classList.add('moving')
-    if (this.settleTimer) clearTimeout(this.settleTimer)
-    this.settleTimer = setTimeout(() => this.host.classList.remove('moving'), SETTLE_MS)
   }
 
   private edgeKind(e: FileEdge): 'violation' | 'added' | 'removed' | 'existing' | null {
@@ -677,31 +732,26 @@ export class ZoomMap {
     if (e.state === 'added') return violation ? 'violation' : 'added'
     if (e.state === 'removed') return 'removed'
     if (violation) return 'violation'
-    return this.opts.showAllImports ? 'existing' : null
+    return null
   }
 
   private drawEdges() {
     const agg = new Map<string, { a: MapNode; b: MapNode; kind: string; n: number }>()
-    // Arrows only on request: for the selected file or folder, or the finding being looked at.
-    // ("All imports" still shows every arrow.)
+    // Arrows only where they say something a list can't: a forbidden import (always; it's rare and the architecture
+    // problem you most want to spot), and the edge of the finding being looked at. A selected file's imports are
+    // outlined instead (see drawSelection) and listed in the side panel.
     const under = (file: number, n: MapNode) => this.ancestors[file].includes(n)
-    const sel = this.selected
     const he = this.highlightEdge
     const focusing = this.focus && this.highlight.length > 0
-    const wanted = (e: FileEdge): 'yes' | 'with-existing' | false => {
-      if (this.opts.showAllImports) return 'yes'
-      if (sel && (under(e.from, sel) || under(e.to, sel))) return sel.kind === 'file' ? 'with-existing' : 'yes'
-      if (he && this.a.files[e.from].module === he.from && this.a.files[e.to].module === he.to) return 'yes'
-      if (focusing && this.highlight.some((h) => under(e.from, h)) && this.highlight.some((h) => under(e.to, h))) return 'yes'
-      return false
+    const wanted = (e: FileEdge, kind: string | null) => {
+      if (kind === 'violation') return true
+      if (he && this.a.files[e.from].module === he.from && this.a.files[e.to].module === he.to) return true
+      return focusing && this.highlight.some((h) => under(e.from, h)) && this.highlight.some((h) => under(e.to, h))
     }
     for (const e of this.a.edges) {
       if (!this.ancestors[e.from] || !this.ancestors[e.to]) continue // a hidden file
-      const want = wanted(e)
-      if (!want) continue
-      // A selected file also shows the imports it already had, faintly, so you can see what it's connected to.
-      const kind = this.edgeKind(e) ?? (want === 'with-existing' ? 'existing' : null)
-      if (!kind) continue
+      const kind = this.edgeKind(e)
+      if (!kind || !wanted(e, kind)) continue
       const a = this.rep(e.from)
       const b = this.rep(e.to)
       if (a === b) continue
@@ -710,14 +760,14 @@ export class ZoomMap {
       if (cur) cur.n++
       else agg.set(key, { a, b, kind, n: 1 })
     }
-    const order = { existing: 0, removed: 1, added: 2, violation: 3 } as Record<string, number>
+    const order = { removed: 1, added: 2, violation: 3 } as Record<string, number>
     const list = [...agg.values()].sort((x, y) => order[x.kind] - order[y.kind])
     const within = (n: MapNode) => this.highlight.some((h) => { for (let c: MapNode | null = n; c; c = c.parent) if (c === h) return true; return false })
     for (const { a, b, kind, n } of list) {
-      const color = kind === 'violation' ? C.edgeViolation : kind === 'added' ? C.edgeAdded : kind === 'removed' ? C.edgeRemoved : C.edgeAll
+      const color = kind === 'violation' ? C.edgeViolation : kind === 'added' ? C.edgeAdded : C.edgeRemoved
       const emph = (he && a.module === he.from && b.module === he.to) || (focusing && within(a) && within(b))
-      const px = (kind === 'existing' ? 0.8 : 1.6 + Math.min(3, Math.log2(n))) * (emph ? 1.8 : 1)
-      const alpha = kind === 'existing' ? 0.35 : emph || (!he && !focusing) ? 0.9 : 0.25
+      const px = (1.6 + Math.min(3, Math.log2(n))) * (emph ? 1.8 : 1)
+      const alpha = emph || (!he && !focusing) ? 0.9 : 0.25
       this.arrow(a, b, px, rgba(color, alpha), kind === 'removed')
     }
   }
@@ -764,6 +814,10 @@ export class ZoomMap {
     const box = (n: MapNode, widthCss: number, color: number) =>
       this.shapes.outline((n.x - cam.x) * k, (n.y - cam.y) * k, n.w * k, n.h * k, widthCss * cam.dpr, color)
     for (const n of this.highlight) box(n, 2, rgba(C.select, 0.7))
+    // A selected file's neighbours: what it imports and what imports it, outlined rather than joined by arrows, so
+    // they read at any zoom. (A fill would sit over their text: the outlines are on the layer above it.)
+    for (const n of this.linked.imports) box(n, 2.5, rgba(C.imports, 0.9))
+    for (const n of this.linked.importers) box(n, 2.5, rgba(C.importers, 0.9))
     if (this.selected) box(this.selected, SELECT_PX, rgba(C.select))
   }
 
@@ -777,8 +831,13 @@ export class ZoomMap {
    */
   private drawLabels(vb: View, s: number, inHeader: Set<MapNode>) {
     let used = 0
-    const textShowing = this.textScale() >= DIFF_TEXT_FROM
+    const textShowing = this.readable()
+    const textOpacity = smoothstep(DIFF_TEXT_FROM, DIFF_TEXT_FULL, this.textScale())
     type Box = { x0: number; y0: number; x1: number; y1: number }
+    const sel = this.selected?.kind === 'file' ? this.selected : null
+    const selBox: Box = sel
+      ? { x0: (sel.x - vb.x) * s, y0: (sel.y - vb.y) * s, x1: (sel.x + sel.w - vb.x) * s, y1: (sel.y + sel.h - vb.y) * s }
+      : { x0: 0, y0: 0, x1: 0, y1: 0 }
     /** Draws n's label below any ancestor label it would land on; returns where it went (null: not drawn). */
     const put = (n: MapNode, above: Box[]): Box | null => {
       const { w, h } = this.screenSize(n)
@@ -786,26 +845,26 @@ export class ZoomMap {
       // A box whose top has gone above the window would get its label pinned to the window's top edge, floating
       // over the text. On the breadcrumb path the header names it; and once diff text is showing, no label floats.
       if (n.y < vb.y && (inHeader.has(n) || textShowing)) return null
-      // The file you're reading (selected, or on the breadcrumb path) is named in the header: no label line over it.
-      if (this.reading(n, inHeader)) return null
+      // The selected file, when its text shows, is named in the header: no label line over it.
+      if (this.reading(n)) return null
+      // A tag at the box's top-left corner, sliding along the window's edge when that corner is off screen.
       const sx = Math.max((n.x - vb.x) * s, 0) + 3
-      let sy = Math.max((n.y - vb.y) * s, 0) + 2
-      const lineH = n.kind === 'module' ? 19 : 14
-      // A folder's or module's label goes in the strip above its contents. Zoomed out that strip is a few pixels,
-      // so the label would sit on its files: then, once its files are big enough to be named, theirs win and this
-      // one waits until the strip can hold it. (While nothing inside is labelled, it can sit over the boxes.)
-      if (n.kind !== 'file' && n.children.length) {
-        const strip = (Math.min(...n.children.map((c) => c.y)) - n.y) * s
-        const named = n.children.some((c) => {
-          const cs = this.screenSize(c)
-          return cs.w >= LABEL_FROM_PX && cs.h >= 14
-        })
-        if (named && strip < lineH + 2) return null
+      let sy = Math.max((n.y - vb.y) * s, 0) + 3
+      const lineH = (n.kind === 'module' ? 19 : 14) + TAG_PAD_Y
+      // Headings fade out as diff text becomes readable (the tags would sit over it, and the header names where you
+      // are), except one whose box is mostly off screen: then its tag is the only sign of which box you're in.
+      let fade = 1
+      if (n.kind !== 'file' && textOpacity > 0) {
+        const vw = Math.min(n.x + n.w, vb.x + vb.width) - Math.max(n.x, vb.x)
+        const vh = Math.min(n.y + n.h, vb.y + vb.height) - Math.max(n.y, vb.y)
+        const shown = (Math.max(0, vw) * Math.max(0, vh)) / (n.w * n.h)
+        if (shown >= HEADING_KEEP_VISIBLE) fade = 1 - textOpacity
+        if (fade <= 0.02) return null
       }
       // Only the part of the box that's on screen is the label's to use: when the box runs off the left edge the label
       // is pulled in to the window's edge, and must still stop at the box's right side, not spill into the next box.
       const boxRight = (n.x + n.w - vb.x) * s
-      const avail = boxRight - sx - 3
+      const avail = boxRight - sx - 3 - TAG_PAD_X
       if (avail < 24) return null
       let el = this.labelPool[used]
       if (!el) {
@@ -838,12 +897,16 @@ export class ZoomMap {
           extra(o, 'ct other', textWidth(o, font.extra) + 4)
         }
       }
-      // Labels are a fixed screen size but the room above a box's contents is in map units, so zoomed out a label
-      // can land on an ancestor's: then it moves down just below it, if the box still has room for it.
-      const right = sx + Math.min(taken + 4, avail)
-      for (const b of above) if (sx < b.x1 && right > b.x0 && sy < b.y1 && sy + lineH > b.y0) sy = b.y1 + 1
+      // Nested boxes' corners nearly meet when zoomed out, so a tag can land on an ancestor's: then it moves down
+      // just below it, if the box still has room for it.
+      const right = sx + Math.min(taken, avail) + TAG_PAD_X
+      for (const b of above) if (sx < b.x1 && right > b.x0 && sy < b.y1 && sy + lineH > b.y0) sy = b.y1 + 2
       const boxBottom = (n.y - vb.y) * s + h
-      if (sy + lineH > boxBottom) {
+      // A selected file is what you're looking at: no other box's tag sits over it (its folders' tags would land on
+      // its corner, since nested corners nearly meet).
+      const over =
+        sel !== null && n !== sel && sx < selBox.x1 && right > selBox.x0 && sy < selBox.y1 && sy + lineH > selBox.y0
+      if (sy + lineH > boxBottom || over) {
         used--
         setStyle(el, 'display', 'none')
         return null
@@ -853,8 +916,8 @@ export class ZoomMap {
         el.dataset.html = html
       }
       setStyle(el, 'transform', `translate(${px(sx)}, ${px(sy)})`)
-      setStyle(el, 'maxWidth', px(avail))
-      setStyle(el, 'opacity', smoothstep(LABEL_FROM_PX, LABEL_FULL_PX, Math.min(w, h * 3)).toFixed(2))
+      setStyle(el, 'maxWidth', px(avail)) // content width: the padding is outside it
+      setStyle(el, 'opacity', (fade * smoothstep(LABEL_FROM_PX, LABEL_FULL_PX, Math.min(w, h * 3))).toFixed(2))
       setStyle(el, 'display', '')
       return { x0: sx, y0: sy, x1: right, y1: sy + lineH }
     }
@@ -876,153 +939,229 @@ export class ZoomMap {
     for (let i = used; i < this.labelPool.length; i++) setStyle(this.labelPool[i], 'display', 'none')
   }
 
+  /** Whether the diff text is big enough to read at this zoom (see DIFF_TEXT_FROM). */
+  private readable(): boolean {
+    return this.textScale() >= DIFF_TEXT_FROM
+  }
+
   /** The diff text's scale at the current zoom (see DIFF_W). */
   private textScale(): number {
-    return Math.min((this.camera.scale * this.medianFileW) / DIFF_W, DIFF_MAX_SCALE)
+    return (this.camera.scale * this.medianFileW) / DIFF_W
   }
 
   /**
-   * Diffs, drawn inside their file's box, all at one text size for the zoom (textScale). They fade in over the
-   * coloured boxes together as you zoom, instead of appearing at a threshold.
+   * The file being read: the selected one, with its text showing. The header names it, so it has no label. (Not the
+   * file at the centre of the view: as you pan, files passing under the centre would lose their labels.)
    */
-  /** The file being read: selected, or on the breadcrumb path, with its text showing. The header names it. */
-  private reading(n: MapNode, path: Set<MapNode>): boolean {
-    return n.kind === 'file' && (this.selected === n || path.has(n)) && this.textScale() >= DIFF_TEXT_FROM
+  private reading(n: MapNode): boolean {
+    return n.kind === 'file' && this.selected === n && this.readable()
   }
 
-  private drawDiffs(vb: View, s: number, path: Set<MapNode>) {
-    const keep = new Set<number>()
+  /**
+   * The diff text: one size for the zoom (textScale), drawn on the GPU in each file's box, clipped to the part of the
+   * box that's on screen, at every zoom.
+   *
+   * Windowing: unscrolled, the text moves with its box as if nothing were cut off; scrolled, any line can reach the
+   * visible part (the first down to its top, the last up to its bottom). The selected file also wraps at the
+   * window's edge; others wrap to their box, so they don't rewrap as you pan past them.
+   */
+  private drawText(vb: View, s: number, _path: Set<MapNode>) {
     const k = this.textScale()
-    // Text first painted the frame it appears means every diff on screen painting at once: a stall right at the
-    // threshold, on every pass. So diffs are switched on a little below it, a couple per frame, at an opacity too
-    // low to see but not zero (fully transparent text isn't painted), and stay on until you zoom well back out.
-    if (k >= DIFF_WARM_FROM) this.textWarm = true
-    else if (k < DIFF_WARM_OFF) this.textWarm = false
-    const opacity = Math.max(0.01, smoothstep(DIFF_TEXT_FROM, DIFF_TEXT_FULL, k))
-    let revealed = 0
-    let pending = false
-    for (const n of this.fileNodes) {
-      if (!this.textWarm) break
+    for (const st of this.textStates.values()) st.clip = null
+    const dpr = this.camera.dpr
+    const W = this.camera.width
+    const H = this.camera.height
+    const viewport = { width: this.canvas.width, height: this.canvas.height }
+
+    // Which files show text at this zoom (ignoring what's on screen): the cache must hold exactly these.
+    const shows = (n: MapNode) => {
+      if (!this.a.files[n.file!].hunks?.length) return false
       const { w, h } = this.screenSize(n)
-      if (w < DIFF_MIN_CHARS * CHAR_PX * k || h < 40 || !this.visible(n, vb)) continue
-      const parent = n.parent
-      if (parent && !this.isOpen(parent)) continue
-      if (!this.diffEls.get(n.file!)?.shown && k < DIFF_TEXT_FROM) {
-        // Warming up: a couple of new ones a frame, so the painting is spread out.
-        if (revealed >= DIFF_WARM_PER_FRAME) {
-          pending = true
-          continue
+      return w >= 2 && h >= 2 // however small its box: below a couple of pixels there's nothing to see
+    }
+
+    // Draw from a cached picture of all the text while it fits in a texture (see textCache.ts). The selected file and
+    // any file you've scrolled move on their own, so they're drawn live on top.
+    const live = (n: MapNode) => this.selected === n || (this.textStates.get(n.file!)?.offset ?? 0) !== 0
+    let cached = false
+    this.text.stats.cacheUsed = false
+    const level = 2 ** Math.ceil(Math.log2(s * dpr)) // device px per world unit, rounded up to a power of two
+    const tw = Math.ceil(this.root.w * level)
+    const th = Math.ceil(this.root.h * level)
+    if (tw <= this.cache.maxSize && th <= this.cache.maxSize) {
+      const c = this.cache
+      const ids = this.fileNodes.filter((n) => shows(n) && !live(n)).map((n) => n.file!)
+      const key = ids.join(',')
+      const frontOk = c.front?.level === level && c.front.key === key
+      const building = c.build?.level === level && c.build.key === key
+      const since = performance.now() - c.builtAt
+      if (!frontOk && !building) c.start(tw, th, level, key, ids)
+      else if (frontOk && c.dirty && !c.build) {
+        if (since > CACHE_REBUILD_MS) c.start(tw, th, level, key, ids)
+        // Held back by the throttle: come back when it allows, or the picture stays stale until something moves.
+        else if (!this.cacheTimer) {
+          this.cacheTimer = setTimeout(() => {
+            this.cacheTimer = null
+            this.schedule()
+          }, CACHE_REBUILD_MS - since + 1)
         }
-        revealed++
       }
-      keep.add(n.file!)
-      const d = this.diffFor(n)
+      if (c.build) {
+        this.buildSlice(k)
+        this.schedule() // keep building on the next frames, even if nothing moves
+      }
+      if (c.front) {
+        // The front picture, even one for another zoom level or file set while its replacement is built.
+        const sc = s * dpr
+        c.draw((this.root.x - vb.x) * sc, (this.root.y - vb.y) * sc, this.root.w * sc, this.root.h * sc, 1, viewport)
+        cached = true
+        this.text.stats.cacheUsed = true
+      }
+    }
+
+    const list: { id: number; at: Placement }[] = []
+    for (const n of this.fileNodes) {
+      if (!shows(n) || !this.visible(n, vb)) continue
+      if (cached && !live(n)) continue
+      const id = n.file!
+      const { w, h } = this.screenSize(n)
       const sx = (n.x - vb.x) * s
       const sy = (n.y - vb.y) * s
-      const top = this.reading(n, path) ? 0 : Math.min(FILE_LABEL_ROOM, h * 0.1) // room for the file's label, if it has one
-      // Window the text to the part of the box that's on screen. Unscrolled, the text moves with the box as if it
-      // weren't cut off (scrollTop follows what's gone above the window); scrolled, it can reach anywhere in the
-      // window: the first line down to the window's top, the last up to its bottom.
-      const boxTop = sy + top
+      // Room for the file's label, as a share of the box, so the text never slides within its box as you zoom.
+      const boxTop = sy // the file's tag floats over its text: no room is kept for it
       const visTop = Math.max(boxTop, 0)
-      const visBottom = Math.min(sy + h, this.camera.height)
-      if (visBottom - visTop < 8) { keep.delete(n.file!); continue }
-      d.k = k
-      d.hidden = (visTop - boxTop) / k
-      // The selected file is windowed sideways too: its text wraps at the window's edge, so every line you're
-      // reading is on screen. Others wrap to their box, so they don't rewrap as you pan past them.
+      const visBottom = Math.min(sy + h, H)
+      if (visBottom - visTop < 2) continue
       const selected = this.selected === n
-      const visLeft = selected ? Math.max(sx, 0) : sx
-      const visRight = selected ? Math.min(sx + w, this.camera.width) : sx + w
-      if (visRight - visLeft < DIFF_MIN_CHARS * CHAR_PX * k) { keep.delete(n.file!); continue }
-      const el = d.el
-      setStyle(el, 'transform', `translate(${px(visLeft)}, ${px(visTop)}) scale(${k.toFixed(4)})`)
-      setStyle(el, 'width', px((visRight - visLeft) / k))
-      setStyle(el, 'height', px((visBottom - visTop) / k))
-      setScroll(el, d.hidden + d.offset)
-      setStyle(el, 'opacity', opacity.toFixed(2))
-      setClass(el, this.selected === n ? 'diff diffview selected' : 'diff diffview')
-      if (!d.shown) {
-        setStyle(el, 'visibility', '')
-        d.shown = true
+      const visLeft = Math.max(sx, 0)
+      const visRight = Math.min(sx + w, W)
+      if (visRight - visLeft < 2) continue
+      // Lay out at the width it wraps at: the box's, or for the selected file the visible part's.
+      const wrap = selected ? (visRight - visLeft) / k : w / k
+      this.text.want(id, wrap, (n.h * DIFF_W) / this.medianFileW)
+      let st = this.textStates.get(id)
+      if (!st) {
+        st = { k, hidden: 0, offset: 0, visH: 0, clip: null, originX: 0, originY: 0 }
+        this.textStates.set(id, st)
       }
+      const contentH = this.text.get(id)?.height ?? 0
+      st.k = k
+      st.hidden = (visTop - boxTop) / k
+      st.visH = (visBottom - visTop) / k
+      const scroll = Math.max(0, Math.min(st.hidden + st.offset, Math.max(0, contentH - st.visH)))
+      st.offset = scroll - st.hidden
+      st.originX = selected ? visLeft : sx
+      st.originY = visTop - scroll * k
+      st.clip = { x: visLeft, y: visTop, w: visRight - visLeft, h: visBottom - visTop }
+      list.push({
+        id,
+        at: { x: st.originX * dpr, y: st.originY * dpr, scale: k * dpr, alpha: 1, clip: { x: st.clip.x * dpr, y: st.clip.y * dpr, w: st.clip.w * dpr, h: st.clip.h * dpr } },
+      })
     }
-    // Hidden, not removed: showing it again is only a repaint, and it keeps its scroll and expanded gaps.
-    for (const [i, d] of this.diffEls) {
-      if (keep.has(i) || !d.shown) continue
-      setStyle(d.el, 'visibility', 'hidden')
-      d.shown = false
-    }
-    // More to warm up: keep going next frame, even if the camera has stopped.
-    if (pending) this.schedule()
-  }
-
-  /** A file's diff element, built now if the pre-build hasn't reached it yet. */
-  private diffFor(n: MapNode): DiffEl {
-    let d = this.diffEls.get(n.file!)
-    if (d) return d
-    const el = document.createElement('div')
-    el.className = 'diff'
-    setStyle(el, 'visibility', 'hidden')
-    // Laid out at the width it will have on screen (with the text scale below its cap), so showing it is a repaint.
-    el.style.width = `${(n.w * DIFF_W) / this.medianFileW}px`
-    el.style.height = `${(n.h * DIFF_W) / this.medianFileW}px`
-    const view = renderDiffView(el, this.a.files[n.file!])
-    this.diffs.appendChild(el)
-    // A box packing made taller than its diff: fill it with the code around the change instead of blank space.
-    view.fill(n.h * (DIFF_W / this.medianFileW) - FILE_LABEL_ROOM)
-    d = { el, k: 1, hidden: 0, offset: 0, shown: false }
-    this.diffEls.set(n.file!, d)
-    return d
+    this.text.draw(list, viewport)
   }
 
   /**
-   * Builds every changed file's diff in idle time after a load, biggest boxes first, so zooming in to where the
-   * text appears doesn't stall on building and laying out a screenful of diffs in one frame.
+   * Draws the next slice of files into the picture being built, up to CACHE_GLYPHS_PER_FRAME glyphs, so no frame
+   * redraws the whole map; when the last one is in, the picture goes on screen. A file not laid out yet is left out
+   * (it's asked for; when it arrives the picture is marked dirty and rebuilt).
    */
-  private prebuildDiffs() {
+  private buildSlice(k: number) {
+    const c = this.cache
+    const build = c.build
+    if (!build) return
+    const level = build.level
+    const per = (level * this.medianFileW) / DIFF_W // device px per text px at this level
+    const start = performance.now()
+    const list: { id: number; at: Placement }[] = []
+    let glyphs = 0
+    while (build.queue.length && glyphs < CACHE_GLYPHS_PER_FRAME) {
+      const id = build.queue.shift()!
+      const n = this.nodeByFile.get(id)
+      if (!n) continue
+      this.text.want(id, (n.w * DIFF_W) / this.medianFileW, (n.h * DIFF_W) / this.medianFileW)
+      const t = this.text.get(id)
+      if (!t?.block) continue
+      glyphs += t.block.glyphs
+      const x = (n.x - this.root.x) * level
+      const y = (n.y - this.root.y) * level
+      list.push({ id, at: { x, y, scale: per, alpha: 1, clip: { x, y, w: n.w * level, h: n.h * level } } })
+    }
+    const size = c.bindBack()
+    if (size) {
+      this.text.draw(list, size)
+      c.release(this.canvas.width, this.canvas.height)
+    }
+    if (!build.queue.length) {
+      c.finish(performance.now())
+      this.text.stats.cacheBuilds++
+    }
+    this.text.stats.cacheMs = performance.now() - start
+  }
+
+  /**
+   * Lays out every changed file's text in the worker soon after a load, biggest boxes first, so it's on the GPU
+   * before you zoom in to it.
+   */
+  private prefetchText() {
     const generation = this.buildGeneration
-    const queue = this.fileNodes
-      .filter((n) => this.a.files[n.file!].hunks?.length)
-      .sort((x, y) => y.w * y.h - x.w * x.h)
+    const queue = this.fileNodes.filter((n) => this.a.files[n.file!].hunks?.length).sort((x, y) => y.w * y.h - x.w * x.h)
     const step = (deadline: { timeRemaining(): number }) => {
       if (generation !== this.buildGeneration) return
-      while (queue.length && deadline.timeRemaining() > 2) this.diffFor(queue.shift()!)
+      while (queue.length && deadline.timeRemaining() > 1) {
+        const n = queue.shift()!
+        this.text.want(n.file!, (n.w * DIFF_W) / this.medianFileW, (n.h * DIFF_W) / this.medianFileW)
+      }
       if (queue.length) idle(step)
     }
     idle(step)
   }
 
-  /** The selected file, if the pointer is over its text (the part of its box on screen, below its label). */
-  private diffUnderPointer(e: WheelEvent): number | null {
+  /** The file whose text is at (x, y) CSS px on the map (the selected one only: the others' clicks select them). */
+  private textAt(x: number, y: number): number | null {
     const n = this.selected
     if (!n || n.kind !== 'file') return null
-    const d = this.diffEls.get(n.file!)
-    if (!d || !d.shown || Number(d.el.style.opacity) < 0.5) return null
-    const r = d.el.getBoundingClientRect()
-    return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom ? n.file! : null
+    const st = this.textStates.get(n.file!)
+    const c = st?.clip
+    if (!c || !this.readable()) return null
+    return x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h ? n.file! : null
+  }
+
+  /** A click on the selected file's text: one of its gap bar's buttons, if it hit one. */
+  private clickText(x: number, y: number): boolean {
+    const id = this.textAt(x, y)
+    if (id === null) return false
+    const st = this.textStates.get(id)!
+    const t = this.text.get(id)
+    if (!t) return false
+    const tx = (x - st.originX) / st.k
+    const ty = (y - st.originY) / st.k
+    const b = t.buttons.find((b) => tx >= b.x0 && tx <= b.x1 && ty >= b.y0 && ty <= b.y1)
+    if (!b) return false
+    this.text.expand(id, b.gap, b.action)
+    return true
   }
 
   /**
-   * A wheel over the selected file's text scrolls its diff and never moves the map (a pinch still zooms it). Its
-   * text wraps to the window's edge (see drawDiffs), so there's nothing to scroll sideways.
+   * A wheel over the selected file's text scrolls it and never moves the map (a pinch still zooms it). Its text
+   * wraps to the window's edge, so there's nothing to scroll sideways.
    */
-  private scrollDiff(e: WheelEvent, dy: number): boolean {
+  private scrollText(e: WheelEvent, x: number, y: number, dy: number): boolean {
     // A scroll gesture goes to one place, decided when it starts: the file's text if the pointer is over it then,
     // otherwise the map. So panning across the file doesn't turn into scrolling it, and a scroll that started on
     // the file doesn't spill into the map as momentum carries on (macOS scroll views work the same way).
     const fresh = e.timeStamp - this.wheelGesture.last > WHEEL_GESTURE_GAP_MS
     this.wheelGesture.last = e.timeStamp
-    if (fresh) this.wheelGesture.file = this.diffUnderPointer(e)
+    if (fresh) this.wheelGesture.file = this.textAt(x, y)
     const file = this.wheelGesture.file
     if (file === null || !this.selected || this.selected.file !== file) return false
-    const d = this.diffEls.get(file)
-    if (!d) return false
-    // Over the selected file, up and down belong to the file: it scrolls the diff (lines wrap, so only that way),
-    // and at the top or bottom it stops there rather than carrying on into the map.
-    const el = d.el
-    el.scrollTop += dy / d.k
-    d.offset = el.scrollTop - d.hidden // the browser stops it at either end
+    const st = this.textStates.get(file)
+    if (!st) return false
+    // Up and down belong to the file; at the top or bottom it stops there rather than carrying on into the map.
+    const contentH = this.text.get(file)?.height ?? 0
+    const scroll = Math.max(0, Math.min(st.hidden + st.offset + dy / st.k, Math.max(0, contentH - st.visH)))
+    st.offset = scroll - st.hidden
+    this.schedule()
     return true
   }
 
@@ -1057,6 +1196,17 @@ export class ZoomMap {
       n = c
     }
   }
+}
+
+/** A modified file's box: its diff's added, removed and unchanged lines blended, as its text averages out from afar. */
+function diffTint(f: FileInfo): number {
+  let add = 0, del = 0, ctx = 0
+  for (const h of f.hunks ?? []) for (const l of h.lines) l.t === '+' ? add++ : l.t === '-' ? del++ : ctx++
+  const total = add + del + ctx || 1
+  const mix = (c: number, shift: number) => ((c >> shift) & 255)
+  const channel = (shift: number) =>
+    Math.round((mix(C.addedFill, shift) * add + mix(C.removedFill, shift) * del + mix(C.contextFill, shift) * ctx) / total)
+  return (channel(16) << 16) | (channel(8) << 8) | channel(0)
 }
 
 function moduleTint(id: string, modeled?: boolean): number {

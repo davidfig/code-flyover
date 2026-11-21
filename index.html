@@ -4,11 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Semantic Zoom</title>
+    <!-- The page's colours before anything else loads, so the first paint is never blank or black. -->
+    <style>
+      html, body { margin: 0; height: 100%; background: #f3f0e8; }
+      #map { background: #f3f0e8; }
+    </style>
+    <link rel="stylesheet" href="/web/style.css" />
   </head>
   <body>
     <header>
       <div class="brand">Semantic Zoom</div>
-      <select id="picker" aria-label="Branch"></select>
+      <select id="repo" aria-label="Repo"></select>
+      <select id="branch" aria-label="Branch"></select>
       <nav id="crumbs" aria-label="Where you are on the map"></nav>
       <div class="menu">
         <button id="showBtn" aria-haspopup="true" aria-expanded="false" aria-controls="showMenu">Show <span class="count" id="showCount"></span><span class="caret">▾</span></button>
@@ -22,9 +29,9 @@
           <hr />
           <div class="group" role="group" aria-label="Highlight">
             <div class="group-title">Highlight</div>
-            <label role="menuitemcheckbox"><input type="checkbox" id="showAllImports" /> All imports</label>
             <label role="menuitemcheckbox"><input type="checkbox" id="showImpacted" /> Importers of changed files</label>
             <label role="menuitemcheckbox"><input type="checkbox" id="dimUnchanged" /> Dim unchanged files</label>
+            <label role="menuitemcheckbox"><input type="checkbox" id="showTiming" /> Frame timing</label>
           </div>
         </div>
       </div>

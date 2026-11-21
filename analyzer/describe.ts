@@ -7,10 +7,10 @@
 // those are the analyzer's findings, which come from the code, not from prose.
 
 import Anthropic from '@anthropic-ai/sdk'
-import type { Analysis, Change, ChangeSet, FileInfo } from '../shared/types.ts'
+import { DESCRIBE_MODEL, type Analysis, type Change, type ChangeSet, type FileInfo } from '../shared/types.ts'
 
 /** Grouping hunks and writing a sentence each is light work: a smaller model does it (pick another with --model). */
-export const DEFAULT_MODEL = 'claude-sonnet-5-5'
+export const DEFAULT_MODEL = DESCRIBE_MODEL
 
 const SYSTEM = `You help a code reviewer see what a branch does before they read its diff.
 

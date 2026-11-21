@@ -10,19 +10,37 @@ The top level is a **difference, not a summary**: the branch's changes, describe
 
 ```bash
 npm install
-npm run analyze -- ../golemdocs folder-sharing          # base defaults to origin/main
-npm run dev
+npm link            # once: puts the semantic-zoom command on your PATH
+semantic-zoom       # in any git repo (or: semantic-zoom ~/Programming/golemdocs)
 ```
 
-Analyzer options:
+`semantic-zoom` adds the repo to the app's list and opens http://localhost:5197/ on it, starting the app's server first if it isn't running (it stays in that terminal; Ctrl-C stops it). Pick a branch in the header: its map is made right then, in about a second, and kept in memory. Branches are listed newest first, with how far ahead of the base they are and whether they're checked out in a worktree. The side panel's **compared with** picks the base (default: the remote's default branch, e.g. `origin/main`). When you come back to the window and the branch has new commits (say from a Claude Code session), the panel offers to update the map. The repo menu also adds other repos by path and removes them from the list.
 
-- `--no-describe`: skip the change descriptions (no API call).
-- `--model <id>`: the model that writes them. Default `claude-sonnet-5-5`; `claude-haiku-5-5` is about 20× cheaper but groups less cleanly.
-- `--redescribe`: write them again even if the head commit hasn't changed.
+Everything is read from git commits on this machine (`git ls-tree`, `git cat-file`, `git diff`), so the repo's working tree is never touched, and nothing leaves the machine except a Describe request. The app's server is Vite with a small API (`vite.config.ts`, `server/api.ts`), so there's no build step; `npm run dev` runs the same app on http://localhost:5196/ for working on it. Its state is in `~/.semantic-zoom/`: the list of repos, and saved change descriptions.
 
-The descriptions call the Claude API with whatever credentials the SDK finds (`ANTHROPIC_API_KEY`, or an `ant auth login` profile). If none are there, the analysis still runs without descriptions. They cost about $0.10 a branch on Sonnet and are cached per head commit in `public/data/<repo>--<branch>.changes.json`.
+### Desktop app
 
-The analyzer reads commits only (`git ls-tree`, `git cat-file`, `git diff`), so it never touches the repo's working tree. It writes `public/data/<repo>--<branch>.json` and adds the branch to `public/data/index.json`. `public/data/` is gitignored: it holds code from the analyzed repo.
+`src-tauri/` wraps the same app in a window of its own (Tauri): a Dock icon, a menu bar (File › Open Repo… with the system's folder picker, View › Whole Map and Update Branch), and the window remembers its place. It runs the server from this checkout, so what you change here is what it shows:
+
+```bash
+cd src-tauri && cargo tauri build --bundles app   # → src-tauri/target/release/bundle/macos/Semantic Zoom.app
+```
+
+On launch it uses the server on port 5197 if one is running (say from `semantic-zoom`), or starts one through your login shell, so `node`, `git` and `ANTHROPIC_API_KEY` come from your shell profile as in a terminal. It stops the server it started when you quit. If the server can't start, the window shows its output (also in `~/.semantic-zoom/app-server.log`). The icon is drawn by `src-tauri/icon.mjs`; `src-tauri/icon.sh` remakes the icon files.
+
+### Architecture model
+
+A repo's intended architecture (modules, which may import which, rules) is read from `.semantic-zoom.json` at its root, at the base commit, so a branch can't loosen the rules it's checked against; a branch that edits the file gets a warning saying so. Without one, `models/<repo name>.json` here is used, and failing that the model is inferred from the repo's folders (the base's dependencies count as intended). See `models/golemdocs.json` for the format.
+
+### Change descriptions
+
+The app never calls a model on its own. A branch without descriptions has a **Describe changes** button in the side panel (and **Describe again** when they're for an older commit): one Claude API call with the default model, about $0.10 a branch on Sonnet. They're saved per branch and base in `~/.semantic-zoom/descriptions/`, and the panel and the map's change cards update without reloading. They use whatever credentials the SDK finds (`ANTHROPIC_API_KEY`, or an `ant auth login` profile).
+
+From the terminal, `npm run analyze -- <repo> <branch> [base]` prints a branch's analysis and findings, and writes descriptions only when asked:
+
+- `--describe`: write them (or reuse the ones saved for this head commit and model).
+- `--model <id>`: the model that writes them (implies `--describe`). Default `claude-sonnet-5-5`; `claude-haiku-5-5` is about 20× cheaper but groups less cleanly.
+- `--redescribe`: write them again even if the head commit hasn't changed (implies `--describe`).
 
 ## What changed
 
@@ -52,9 +70,10 @@ Dependencies are found for TypeScript/JavaScript (imports, re-exports, `require`
 - The header's **Show** menu holds the view options, in two groups (Files; Highlight), and counts how many differ from the defaults. **Unchanged files** switches to the whole repo as a squarified treemap (module → folder → file, sized by √lines), with **Importers of changed files** tinting the files that import a change. **Tests** and **Translations** put those back in either view. Choices are remembered.
 - A module whose files all sit in one folder is shown as that folder (`server/src` is just `server`).
 - Zoomed out, numbered **change cards** sit over the code they describe. Hover one to outline its files, click to zoom to them. They fade as you zoom in, and step aside while you look at a change, finding or file.
-- Arrows appear only when you ask: click a file or folder for its imports, or a finding for its edge. **All imports** shows every arrow.
+- Arrows are kept for what a list can't show at a glance: a forbidden import (always drawn), a finding's edge, and the imports a change added or removed between its files when you click it. Selecting a file outlines what it imports (teal) and what imports it (purple) instead of drawing arrows, and the side panel lists both; click an entry to fly to that file.
 - A box opens (shows its children) once it's 170 px on screen; arrows join the deepest open boxes, so they regroup as you zoom.
-- Labels stay a fixed screen size and fade in; diffs fade in together as you zoom, GitHub-style (line numbers, hunk headers, buttons to show more lines around a change), and are built in idle time after a branch loads so zooming in doesn't stall.
+- Diff text is drawn on the GPU: MTSDF glyphs (Liberation Mono, OFL, from golemdocs' font atlases in `public/fonts/`), laid out off the main thread in a worker (`web/text/`), so a big PR stays smooth at any zoom. The side panel's diff is HTML, so its text can be selected.
+- Labels are tags floating at each box's top-left corner (no space is kept for them, so boxes hold only their files), a fixed screen size, sliding along the window's edge when the corner is off screen. Module and folder tags fade out as diff text becomes readable, unless their box is mostly off screen. Diff text is drawn at every zoom, however small (zoomed out, the boxes are their text), GitHub-style (line numbers, hunk headers, buttons to show more lines around a change), and are built in idle time after a branch loads so zooming in doesn't stall.
 - Select a file and the wheel over its text scrolls it (decided when the gesture starts); its text wraps at the window's edge, and can scroll so any line reaches the visible area.
 - The breadcrumbs in the header say where the middle of the view is; click one to zoom to it.
 - Double-click a box to read it: it zooms until the box fills the window's width, with its top at the window's top.

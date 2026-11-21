@@ -129,6 +129,9 @@ export interface Change {
   files: string[]
 }
 
+/** The model that writes change descriptions by default (analyzer/describe.ts; the panel's Describe button names it). */
+export const DESCRIBE_MODEL = 'claude-sonnet-5-5'
+
 export interface ChangeSet {
   /** who wrote the descriptions: the model id */
   by: string

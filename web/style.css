@@ -28,6 +28,8 @@ header {
   border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px;
 }
 .brand { font-weight: 700; letter-spacing: 0.02em; white-space: nowrap; }
+/* In the desktop app the header is the title bar: clear the window buttons, and be tall enough to grab. */
+html.tauri header { padding-left: 84px; min-height: 38px; box-sizing: border-box; -webkit-user-select: none; user-select: none; }
 header select { font: inherit; padding: 3px 6px; max-width: 300px; min-width: 0; }
 header button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); background: white; border-radius: 6px; cursor: pointer; white-space: nowrap; }
 header button:hover { border-color: #c9c2b2; }
@@ -63,19 +65,25 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #legend span { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 .sw { display: inline-block; width: 11px; height: 11px; border-radius: 2px; }
-.sw.modified { background: var(--modified); }
-.sw.added { background: var(--added); }
-.sw.deleted { border: 1.5px solid var(--deleted); background: #c8414f33; }
-.sw.impacted { background: var(--impacted); }
+/* The swatches match the boxes, which are coloured like their diffs (light green added, light pink removed;
+   a modified file mixes them with the near-white of unchanged lines). */
+.sw { border: 1px solid rgba(60, 55, 45, 0.25); }
+.sw.modified { background: linear-gradient(90deg, #d3ecd9 50%, #f6d3d7 50%); }
+.sw.added { background: #d3ecd9; }
+.sw.deleted { border-color: #e39aa3; background: #f6d3d7; }
+.sw.impacted { background: #d9e6f3; }
 .ln { display: inline-block; width: 18px; height: 0; border-top: 3px solid; }
 .ln.added { border-color: var(--warning); }
 .ln.violation { border-color: var(--violation); }
 .ln.removed { border-color: var(--removed); border-top-style: dashed; }
 
-.labels, .diffs { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .label {
   position: absolute; left: 0; top: 0; font-size: 11px; line-height: 1.2; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; color: #4a463e; will-change: transform;
+  /* A tag floating over the map (no room is kept for it): a solid chip so it reads over boxes and text. */
+  padding: 1px 4px; border-radius: 3px; background: rgba(251, 250, 246, 0.94);
+  box-shadow: 0 0 0 1px rgba(60, 57, 51, 0.12);
 }
 .label.module { font-size: 15px; font-weight: 700; color: var(--ink); }
 .label.dir { font-weight: 600; }
@@ -86,18 +94,17 @@ main { flex: 1; display: flex; min-height: 0; }
 .st.modified, .st.renamed { background: var(--modified); }
 .st.deleted, .st.removed { background: var(--deleted); }
 
-/* A diff is laid out at a fixed width and scaled to its box (see drawDiffs), so its font size is fixed here.
+/* The side panel's diff (the map draws its diffs on the GPU, see web/text/). Its font size is fixed here.
    It scrolls (the wheel over a selected file), with the scrollbar hidden: the map is the scrollbar's job. */
 .diff {
   position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: auto; scrollbar-width: none;
   font: 12px/1.4 var(--mono); background: rgba(255, 255, 255, 0.95); border-top: 1px solid var(--line); padding: 4px 0;
   /* Each diff's layout is its own: resizing or scrolling one never makes the browser re-lay out the others. */
   contain: layout paint style;
+  /* Rows are built and emptied as you scroll (diffView.ts keeps the text still itself): the browser mustn't also. */
+  overflow-anchor: none;
 }
 .diff::-webkit-scrollbar { display: none; }
-/* While the map moves (see noteMotion in map.ts), diffs are GPU layers: zooming scales a picture of the text instead
-   of re-rendering every line each frame. It may look a touch soft mid-zoom; it renders sharp again when you stop. */
-#map.moving .diffs .diff { will-change: transform; }
 /* The selected file's diff takes clicks (its expand buttons); the others let them through to the map. */
 .diff.selected { pointer-events: auto; }
 /* GitHub-style rows: old and new line numbers, a sign, then the code. Long lines wrap (no sideways scrolling),
@@ -178,8 +185,24 @@ ol.findings { list-style: none; margin: 0; padding: 0; }
 ul.edges { margin: 0; padding: 0; list-style: none; font-size: 12px; }
 ul.edges li { margin-bottom: 4px; word-break: break-all; }
 ul.edges code { display: block; color: var(--muted); font-size: 11px; }
+ul.edges a.goto { color: var(--ink); cursor: pointer; }
+ul.edges a.goto:hover { color: #1f6feb; text-decoration: underline; }
+ul.edges .off, ul.edges .more { color: var(--muted); }
+ul.edges li.removed .off { text-decoration: line-through; }
+/* The map outlines a selected file's imports and importers in these colours (map.ts C.imports, C.importers). */
+.sw.imports { border: none; background: transparent; box-shadow: inset 0 0 0 2px #1a9a8a; }
+.sw.importers { border: none; background: transparent; box-shadow: inset 0 0 0 2px #8a5cc8; }
+h3 .sw { margin-right: 6px; vertical-align: -1px; }
 .panel-diff { position: static; font-size: 11px; max-height: 480px; overflow: auto; border: 1px solid var(--line); }
 .empty { padding: 20px; color: var(--muted); }
+
+/* The frame-timing readout (Show › Frame timing). */
+.perf {
+  position: absolute; top: 8px; right: 8px; z-index: 8; pointer-events: none; padding: 6px 9px; border-radius: 6px;
+  font: 11px/1.5 var(--mono); color: #e9e6dd; background: rgba(30, 28, 24, 0.82);
+}
+.perf b { display: inline-block; width: 7ch; font-weight: 600; color: #a8a294; }
+.perf .bad { color: #ffb08a; }
 
 /* What changed: cards on the zoomed-out map, and the list in the panel. */
 .changes { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 4; transition: opacity 0.12s; }
@@ -211,3 +234,21 @@ ol.changes-list { list-style: none; margin: 0; padding: 0; }
 .change .ev code { font-size: 11px; }
 .partofs { font-size: 12px; margin-top: 4px; color: var(--muted); }
 .partofs a { color: var(--select); cursor: pointer; }
+
+/* Describe changes: asks the dev server to write the AI descriptions (vite.config.ts). */
+.describe { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin: 6px 0 10px; }
+.describe button { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 5px; border: 1px solid #c9c2b2; background: #fbfaf6; color: var(--ink); cursor: pointer; }
+.describe button:hover:not(:disabled) { background: #f1ede3; }
+.describe button:disabled { color: var(--muted); cursor: progress; }
+.describe .hint { margin: 0; }
+.describe .error { flex-basis: 100%; color: #b03a46; font-size: 12px; }
+
+/* The panel's messages while there's no map (no repos, analyzing, errors). */
+#panel-body .empty h2 { margin-top: 0; }
+#panel-body .error { color: #b03a46; white-space: pre-wrap; }
+.add-repo, .newer button { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 5px; border: 1px solid #c9c2b2; background: #fbfaf6; color: var(--ink); cursor: pointer; }
+.add-repo:hover, .newer button:hover { background: #f1ede3; }
+/* The branch moved on since the map was made (checked when the window regains focus). */
+.newer { margin: 6px 0; padding: 6px 8px; border-radius: 5px; background: #fdf3dc; font-size: 12px; display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.newer[hidden] { display: none; }
+#base { font: inherit; font-size: 12px; padding: 0 2px; max-width: 180px; }

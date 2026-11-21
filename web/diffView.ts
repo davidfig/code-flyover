@@ -5,39 +5,16 @@
 // Highlighting runs over the whole file once, so a line inside a block comment that started outside its hunk is
 // still coloured as one. Removed lines aren't in that file: they're highlighted in hunk order, starting from the
 // state just before the hunk.
+//
+// Only what can be seen is built. The view is a list of items (hunk headers, rows, gap bars) in chunks; a chunk
+// near the visible part of the box is built, the rest are empty placeholders as tall as their rows are estimated to
+// wrap to, and a built chunk far from view is emptied again. So a page holds about a screenful of rows per diff, at
+// any size of PR. render() says what's visible; as estimates become real heights above it, it reports the shift so
+// the caller can keep the text still.
 
 import type { FileInfo } from '../shared/types.ts'
-import { languageOf, tokenizer, type LineState, type Token } from './highlight.ts'
+import { diffModel, FILL_STEP, STEP, type Gap, type Item, type Row } from './diffModel.ts'
 
-/** Lines one click on an expand button shows. */
-const STEP = 20
-
-type Sign = '+' | '-' | ' '
-
-interface Row {
-  old: number | null
-  new: number | null
-  sign: Sign
-  tokens: Token[]
-}
-
-interface Gap {
-  /** new-file line numbers of the hidden run, inclusive; old = new + delta */
-  from: number
-  to: number
-  delta: number
-  /** lines shown so far from the top of the run and from its bottom */
-  top: number
-  bottom: number
-  /** where in the file: before the first hunk, between two, or after the last (decides which buttons make sense) */
-  where: 'start' | 'between' | 'end'
-}
-
-interface Section {
-  header: string
-  range: string
-  rows: Row[]
-}
 
 export interface DiffView {
   /**
@@ -46,86 +23,46 @@ export interface DiffView {
    * with the code around the change, not left blank.
    */
   fill(height: number): void
+  /**
+   * Builds the rows near the visible part (`top` and `height`: the scroll position and the visible height, `width`:
+   * the width lines wrap at, all in the view's own px) and empties ones far from it. Returns how far the content
+   * above `top` grew or shrank from re-estimating at a new width: add it to the scroll position. (Built chunks' real
+   * heights arrive later, through onShift.)
+   */
+  render(top: number, height: number, width: number): number
 }
 
-/** Lines one round of fill() shows on each side of each gap. */
-const FILL_STEP = 3
+export interface DiffViewOptions {
+  /** the view scrolls by itself (the side panel): render on its own scroll events */
+  selfScroll?: boolean
+  /**
+   * Content above the visible part changed height by `delta` px (a chunk's estimate became its real height): move
+   * the scroll position by it to keep the text still. Called after layout, before paint, so nothing visibly jumps.
+   */
+  onShift?(delta: number): void
+}
 
-/** Builds the view into `root` (emptied first). */
-export function renderDiffView(root: HTMLElement, f: FileInfo): DiffView {
+/** Items per chunk: the unit that's built or emptied. */
+const CHUNK = 40
+/** Estimating heights: a row (12px text, line-height 1.4), a hunk header, a gap bar; the gutter's width; a character. */
+const ROW_H = 16.8
+const HEAD_H = 23
+const BAR_H = 22
+const GUTTER_PX = 104
+const CHAR_PX = 7.22
+
+
+/** Builds the view into `root` (emptied first). Nothing is built until render() (or, with selfScroll, at once). */
+export function renderDiffView(root: HTMLElement, f: FileInfo, opts: DiffViewOptions = {}): DiffView {
   root.textContent = ''
   root.classList.add('diffview')
   if (!f.hunks || f.hunks.length === 0) {
     root.appendChild(div('meta', `${f.status === 'unchanged' ? 'Unchanged' : f.status} · ${f.lines} lines`))
-    return { fill: () => {} }
+    return { fill: () => {}, render: () => 0 }
   }
-  const tok = tokenizer(languageOf(f.path))
-  const deleted = f.status === 'deleted'
-  // The file at head (or at base, deleted), highlighted as one piece: tokens per line and the state before each.
-  const fileLines = f.text !== undefined ? f.text.split('\n') : null
-  if (fileLines && fileLines[fileLines.length - 1] === '') fileLines.pop()
-  const tokens: Token[][] = []
-  const before: LineState[] = []
-  if (fileLines) {
-    let state: LineState = { in: 'code' }
-    for (const line of fileLines) {
-      before.push(state)
-      const r = tok.line(line, state)
-      tokens.push(r.tokens)
-      state = r.state
-    }
-  }
-  /** Tokens for a line of the file by its number there, or highlighted alone if the file isn't stored. */
-  const fileTokens = (no: number, text: string): Token[] => tokens[no - 1] ?? tok.line(text, { in: 'code' }).tokens
-
-  const sections: Section[] = []
-  const spans: { oldStart: number; newStart: number; newEnd: number }[] = []
-  for (const h of f.hunks) {
-    const m = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/.exec(h.header)
-    let oldNo = m ? Number(m[1]) : 1
-    let newNo = m ? Number(m[3]) : 1
-    const oldStart = oldNo
-    const newStart = newNo
-    // Removed lines carry their own highlighter state, from the line before the hunk.
-    let removed: LineState = before[(deleted ? oldNo : newNo) - 1] ?? { in: 'code' }
-    const rows: Row[] = []
-    for (const l of h.lines) {
-      if (l.t === ' ') {
-        // On the deleted side the file is the old one, numbered by old lines.
-        rows.push({ old: oldNo, new: newNo, sign: ' ', tokens: fileTokens(deleted ? oldNo : newNo, l.s) })
-        removed = before[deleted ? oldNo : newNo] ?? removed
-        oldNo++
-        newNo++
-      } else if (l.t === '+') {
-        rows.push({ old: null, new: newNo, sign: '+', tokens: fileTokens(newNo, l.s) })
-        newNo++
-      } else {
-        const r = deleted ? { tokens: fileTokens(oldNo, l.s), state: before[oldNo] ?? removed } : tok.line(l.s, removed)
-        removed = r.state
-        rows.push({ old: oldNo, new: null, sign: '-', tokens: r.tokens })
-        oldNo++
-      }
-    }
-    sections.push({ header: m?.[5]?.trim() ?? '', range: m ? `${m[1]}${m[2] ? ',' + m[2] : ''} → ${m[3]}${m[4] ? ',' + m[4] : ''}` : h.header, rows })
-    spans.push({ oldStart, newStart, newEnd: newNo - 1 })
-  }
-
-  // The hidden runs of unchanged lines, in the file the hunks are numbered against.
-  const gaps: (Gap | null)[] = []
-  const total = fileLines?.length ?? 0
-  const lineOf = (s: (typeof spans)[number]) => (deleted ? s.oldStart : s.newStart)
-  for (let i = 0; i <= spans.length; i++) {
-    if (!fileLines) {
-      gaps.push(null)
-      continue
-    }
-    const prevEnd = i === 0 ? 0 : deleted ? spans[i - 1].oldStart + countOld(f.hunks[i - 1].lines) - 1 : spans[i - 1].newEnd
-    const nextStart = i === spans.length ? total + 1 : lineOf(spans[i])
-    const from = prevEnd + 1
-    const to = nextStart - 1
-    const delta = i === spans.length ? (i === 0 ? 0 : spans[i - 1].oldStart - spans[i - 1].newStart + (countOld(f.hunks[i - 1].lines) - countNew(f.hunks[i - 1].lines))) : spans[i].oldStart - spans[i].newStart
-    gaps.push(to >= from ? { from, to, delta: deleted ? 0 : delta, top: 0, bottom: 0, where: i === 0 ? 'start' : i === spans.length ? 'end' : 'between' } : null)
-  }
+  const model = diffModel(f)!
+  const { gaps } = model
+  const items = () => model.items()
 
   const rowEl = (r: Row) => {
     const el = div(`l ${r.sign === '+' ? 'a' : r.sign === '-' ? 'd' : 'c'}`)
@@ -141,94 +78,161 @@ export function renderDiffView(root: HTMLElement, f: FileInfo): DiffView {
     el.appendChild(code)
     return el
   }
-  /** An unchanged line of the file, for an expanded gap. */
-  const contextRow = (no: number, g: Gap): Row => {
-    const text = fileLines![no - 1]
-    return deleted ? { old: no, new: null, sign: ' ', tokens: fileTokens(no, text) } : { old: no + g.delta, new: no, sign: ' ', tokens: fileTokens(no, text) }
-  }
-
-  const renderGap = (holder: HTMLElement, g: Gap) => {
-    holder.textContent = ''
-    for (let no = g.from; no < g.from + g.top; no++) holder.appendChild(rowEl(contextRow(no, g)))
-    const hidden = g.to - g.from + 1 - g.top - g.bottom
-    if (hidden > 0) {
-      const bar = div('gap')
-      const show = (label: string, title: string, act: () => void) => {
-        const b = document.createElement('button')
-        b.textContent = label
-        b.title = title
-        b.onclick = (e) => {
-          e.stopPropagation()
-          act()
-          renderGap(holder, g)
-        }
-        bar.appendChild(b)
-      }
-      if (hidden <= STEP) show(`Show ${hidden} line${hidden === 1 ? '' : 's'}`, 'Show the hidden lines', () => (g.top += hidden))
-      else {
-        // Down from the hunk above, up from the hunk below: whichever makes sense where the gap is.
-        if (g.where !== 'start') show(`↓ ${STEP}`, `Show ${STEP} more lines below the change above`, () => (g.top += STEP))
-        if (g.where !== 'end') show(`↑ ${STEP}`, `Show ${STEP} more lines above the change below`, () => (g.bottom += STEP))
-        show(`All ${hidden}`, 'Show all the hidden lines', () => (g.top += hidden))
-      }
-      bar.appendChild(span('count', `${hidden} unchanged line${hidden === 1 ? '' : 's'}`))
-      holder.appendChild(bar)
+  const itemEl = (it: Item): HTMLElement => {
+    if (it.kind === 'row') return rowEl(it.row)
+    if (it.kind === 'head') {
+      const head = div('hh')
+      head.appendChild(span('range', it.s.range))
+      if (it.s.header) head.appendChild(span('ctx', it.s.header))
+      return head
     }
-    for (let no = g.to - g.bottom + 1; no <= g.to; no++) holder.appendChild(rowEl(contextRow(no, g)))
+    const g = it.g
+    const hidden = g.to - g.from + 1 - g.top - g.bottom
+    const bar = div('gap')
+    const show = (label: string, title: string, act: () => void) => {
+      const b = document.createElement('button')
+      b.textContent = label
+      b.title = title
+      b.onclick = (e) => {
+        e.stopPropagation()
+        act()
+        rebuild()
+      }
+      bar.appendChild(b)
+    }
+    if (hidden <= STEP) show(`Show ${hidden} line${hidden === 1 ? '' : 's'}`, 'Show the hidden lines', () => (g.top += hidden))
+    else {
+      // Down from the hunk above, up from the hunk below: whichever makes sense where the gap is.
+      if (g.where !== 'start') show(`↓ ${STEP}`, `Show ${STEP} more lines below the change above`, () => (g.top += STEP))
+      if (g.where !== 'end') show(`↑ ${STEP}`, `Show ${STEP} more lines above the change below`, () => (g.bottom += STEP))
+      show(`All ${hidden}`, 'Show all the hidden lines', () => (g.top += hidden))
+    }
+    bar.appendChild(span('count', `${hidden} unchanged line${hidden === 1 ? '' : 's'}`))
+    return bar
   }
 
-  const holders: { g: Gap; holder: HTMLElement }[] = []
-  const addGap = (g: Gap | null) => {
-    if (!g) return
-    const holder = div('gaprun')
-    renderGap(holder, g)
-    root.appendChild(holder)
-    holders.push({ g, holder })
+  /** An item's height before it's built: rows by how many times their text wraps at `width`. */
+  const estimate = (it: Item, width: number): number => {
+    if (it.kind === 'head') return HEAD_H
+    if (it.kind === 'bar') return BAR_H
+    const perLine = Math.max(12, Math.floor((width - GUTTER_PX) / CHAR_PX))
+    let chars = 0
+    for (const t of it.row.tokens) chars += t.text.length
+    return ROW_H * Math.max(1, Math.ceil(chars / perLine))
   }
-  sections.forEach((s, i) => {
-    addGap(gaps[i])
-    const head = div('hh')
-    head.appendChild(span('range', s.range))
-    if (s.header) head.appendChild(span('ctx', s.header))
-    root.appendChild(head)
-    for (const r of s.rows) root.appendChild(rowEl(r))
+
+  // ---- chunks: built near the visible part, placeholders elsewhere ----
+  interface Chunk {
+    items: Item[]
+    el: HTMLElement
+    /** its height: estimated until built, then measured */
+    h: number
+    live: boolean
+    /** the width it was measured or estimated at (wrapping changes with it) */
+    at: number
+  }
+  let chunks: Chunk[] = []
+  let width = 0
+  let last = { top: 0, height: 0, width: 0 }
+  // Built chunks report their real height when the browser lays them out anyway: asking for it as each is built
+  // forced a layout per chunk, hundreds in a row on a big PR.
+  const byEl = new Map<Element, Chunk>()
+  const observer = new ResizeObserver((entries) => {
+    let shift = 0
+    for (const e of entries) {
+      const c = byEl.get(e.target)
+      if (!c || !c.live) continue
+      const h = e.borderBoxSize?.[0]?.blockSize ?? (e.target as HTMLElement).offsetHeight
+      if (Math.abs(h - c.h) < 0.5) continue
+      // Above what's visible: the text below would move, so the scroll moves with it.
+      let y = 0
+      for (const o of chunks) {
+        if (o === c) break
+        y += o.h
+      }
+      if (y + c.h <= last.top) shift += h - c.h
+      c.h = h
+    }
+    if (shift) {
+      last.top += shift
+      if (opts.selfScroll) root.scrollTop += shift
+      opts.onShift?.(shift)
+    }
   })
-  addGap(gaps[sections.length])
+  const placeholder = (c: Chunk) => {
+    c.el.textContent = ''
+    c.el.style.height = `${c.h}px`
+    c.live = false
+    observer.unobserve(c.el)
+  }
+  const rebuild = () => {
+    const all = items()
+    for (const c of chunks) observer.unobserve(c.el)
+    byEl.clear()
+    root.textContent = ''
+    chunks = []
+    for (let i = 0; i < all.length; i += CHUNK) {
+      const list = all.slice(i, i + CHUNK)
+      const c: Chunk = { items: list, el: div('chunk'), h: 0, live: false, at: width }
+      c.h = list.reduce((t, it) => t + estimate(it, width || 560), 0)
+      placeholder(c)
+      root.appendChild(c.el)
+      chunks.push(c)
+      byEl.set(c.el, c)
+    }
+    if (last.height) render(last.top, last.height, last.width)
+  }
+  const render = (top: number, height: number, w: number): number => {
+    last = { top, height, width: w }
+    width = w
+    const margin = Math.max(height / 2, 150)
+    let y = 0
+    let shift = 0
+    for (const c of chunks) {
+      const near = y + c.h > top - margin && y < top + height + margin
+      const far = y + c.h < top - margin * 3 || y > top + height + margin * 3
+      const above = y + c.h <= top
+      if (near && !c.live) {
+        // Build it; its real height comes from the observer once the browser lays it out.
+        c.el.style.height = ''
+        for (const it of c.items) c.el.appendChild(itemEl(it))
+        c.live = true
+        c.at = w
+        observer.observe(c.el)
+      } else if (c.live && Math.abs(c.at - w) > 1) {
+        c.at = w // a new wrapping width: the observer reports the new height
+      } else if (far && c.live) placeholder(c)
+      else if (!c.live && Math.abs(c.at - w) > 1) {
+        // A placeholder whose wrapping width changed: estimate again.
+        const h = c.items.reduce((t, it) => t + estimate(it, w), 0)
+        if (above) shift += h - c.h
+        c.h = h
+        c.at = w
+        c.el.style.height = `${h}px`
+      }
+      y += c.h
+    }
+    return shift
+  }
+  rebuild()
+
+  if (opts.selfScroll) {
+    const draw = () => render(root.scrollTop, root.clientHeight, root.clientWidth)
+    root.addEventListener('scroll', draw, { passive: true })
+    requestAnimationFrame(draw)
+  }
 
   return {
     fill(height) {
-      // The content's own height (scrollHeight never reads less than the box, so it can't tell an unfilled box).
-      const content = () => {
-        const last = root.lastElementChild as HTMLElement | null
-        return last ? last.offsetTop + last.offsetHeight : 0
-      }
+      // The content's height from the chunks (estimated where not built), so this needs no layout.
+      const content = () => chunks.reduce((t, c) => t + c.h, 0)
       for (let round = 0; round < 400 && content() < height; round++) {
-        let grew = false
-        for (const { g, holder } of holders) {
-          const hidden = g.to - g.from + 1 - g.top - g.bottom
-          if (hidden <= 0) continue
-          // Context above a change (the gap's bottom) and below one (its top), as the gap's place allows.
-          const below = g.where === 'start' ? 0 : Math.min(FILL_STEP, hidden)
-          const above = g.where === 'end' ? 0 : Math.min(FILL_STEP, hidden - below)
-          g.top += below
-          g.bottom += above
-          if (below + above > 0) {
-            renderGap(holder, g)
-            grew = true
-          }
-        }
-        if (!grew) break
+        if (!model.growAll(FILL_STEP)) break
+        rebuild()
       }
     },
+    render,
   }
-}
-
-function countOld(lines: { t: Sign }[]): number {
-  return lines.filter((l) => l.t !== '+').length
-}
-
-function countNew(lines: { t: Sign }[]): number {
-  return lines.filter((l) => l.t !== '-').length
 }
 
 function div(cls: string, text?: string): HTMLElement {

@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "analyze": "tsx analyzer/cli.ts"
+    "analyze": "tsx analyzer/cli.ts",
+    "app": "node bin/semantic-zoom.mjs"
   },
   "license": "UNLICENSED",
   "type": "module",
@@ -19,5 +20,8 @@
     "typescript": "^5.9.3",
     "vite": "^7.3.8"
   },
-  "private": true
+  "private": true,
+  "bin": {
+    "semantic-zoom": "bin/semantic-zoom.mjs"
+  }
 }

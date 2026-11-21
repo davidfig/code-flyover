@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["analyzer", "shared", "web"]
+  "include": ["analyzer", "shared", "server", "web", "vite.config.ts"]
 }

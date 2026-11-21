@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Semantic Zoom</title>
+    <!-- Shown while the app's server starts (src/lib.rs), and if it can't. -->
+    <style>
+      html, body { margin: 0; height: 100%; background: #f3f0e8; color: #3c3933; font: 14px -apple-system, system-ui, sans-serif; }
+      body { display: grid; place-items: center; -webkit-user-select: none; user-select: none; }
+      main { max-width: 560px; padding: 24px; text-align: center; }
+      .error { display: none; text-align: left; }
+      .error pre { white-space: pre-wrap; background: #fbfaf6; border: 1px solid #d3cdbf; border-radius: 6px; padding: 10px; font-size: 12px; max-height: 50vh; overflow: auto; -webkit-user-select: text; user-select: text; }
+      body.failed .starting { display: none; }
+      body.failed .error { display: block; }
+    </style>
+  </head>
+  <body data-tauri-drag-region>
+    <main>
+      <p class="starting">Starting Semantic Zoom…</p>
+      <div class="error">
+        <h2>Semantic Zoom couldn't start its server</h2>
+        <pre id="detail"></pre>
+      </div>
+    </main>
+    <script>
+      window.showError = (text) => {
+        document.getElementById('detail').textContent = text
+        document.body.classList.add('failed')
+      }
+    </script>
+  </body>
+</html>

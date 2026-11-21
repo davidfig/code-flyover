@@ -1,14 +1,19 @@
-// Usage: npm run analyze -- <repo path> <head branch> [base, default origin/main] [--no-describe] [--model <id>] [--redescribe]
+// Prints a branch's analysis in the terminal, and with --describe writes its change descriptions where the app finds
+// them (~/.semantic-zoom, see server/api.ts). The app itself analyzes on demand: run `semantic-zoom` to open it.
 //
-// --no-describe   skip the AI change descriptions (no API call)
-// --model <id>    the model that writes them (default: see analyzer/describe.ts)
-// --redescribe    write them again even if the head commit hasn't changed
-import fs from 'node:fs'
+// Usage: npm run analyze -- <repo path> <head branch> [base, default the remote's default branch] [--describe] [--model <id>] [--redescribe]
+//
+// The analysis itself never calls a model. AI change descriptions are written only when you ask:
+// --describe      write them (one Claude API call), or reuse the ones cached for this head commit and model
+// --model <id>    the model that writes them (default: see analyzer/describe.ts); implies --describe
+// --redescribe    write them again even if the head commit hasn't changed; implies --describe
+// Without these, descriptions already cached for this head commit (by any model) are still shown: no API call.
+// --id <name>     name the analysis (default: <repo>--<head>)
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { analyze } from './analyze.ts'
 import { DEFAULT_MODEL, describeChanges } from './describe.ts'
-import type { AnalysisIndexEntry, ChangeSet } from '../shared/types.ts'
+import { defaultBase, loadDescriptions, saveDescriptions } from '../server/api.ts'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
@@ -24,56 +29,36 @@ const option = (name: string) => {
   const [, value] = args.splice(i, 2)
   return value
 }
-const noDescribe = flag('--no-describe')
+flag('--no-describe') // the old opt-out: now the default, so accepted and ignored
 const redescribe = flag('--redescribe')
-const model = option('--model') ?? DEFAULT_MODEL
-const [repoArg, head, base = 'origin/main'] = args
+const modelOption = option('--model')
+const describe = flag('--describe') || redescribe || modelOption !== undefined
+const model = modelOption ?? DEFAULT_MODEL
+const idOption = option('--id')
+const [repoArg, head, baseArg] = args
 if (!repoArg || !head) {
-  console.error('usage: npm run analyze -- <repo path> <head branch> [base] [--no-describe] [--model <id>] [--redescribe]')
+  console.error('usage: npm run analyze -- <repo path> <head branch> [base] [--describe] [--model <id>] [--redescribe] [--id <name>]')
   process.exit(1)
 }
 
+const base = baseArg ?? defaultBase(path.resolve(repoArg))
 const started = Date.now()
-const a = analyze({ repo: path.resolve(repoArg), head, base, modelsDir: path.join(root, 'models') })
-const dataDir = path.join(root, 'public', 'data')
-fs.mkdirSync(dataDir, { recursive: true })
-
-// Change descriptions: kept beside the analysis and reused while the head commit and model are the same.
-const changesPath = path.join(dataDir, a.id + '.changes.json')
-const cached: ChangeSet | null = fs.existsSync(changesPath) ? JSON.parse(fs.readFileSync(changesPath, 'utf8')) : null
-if (cached && cached.headSha === a.headSha && !redescribe && (cached.by.startsWith(model) || noDescribe)) {
+const a = analyze({ repo: path.resolve(repoArg), head, base, modelsDir: path.join(root, 'models'), id: idOption })
+// Change descriptions: saved where the app looks, and reused while the head commit and model are the same.
+const cached = loadDescriptions(path.resolve(repoArg), head, base)
+if (cached && cached.headSha === a.headSha && !redescribe && (cached.by.startsWith(model) || !describe)) {
   a.changes = cached
-} else if (!noDescribe) {
+} else if (describe) {
   try {
     const t = Date.now()
     a.changes = await describeChanges(a, model)
-    fs.writeFileSync(changesPath, JSON.stringify(a.changes, null, 2))
+    saveDescriptions(path.resolve(repoArg), head, base, a.changes)
     console.log(`described by ${a.changes.by} in ${((Date.now() - t) / 1000).toFixed(1)}s`)
   } catch (e) {
     console.warn(`No change descriptions: ${e instanceof Error ? e.message : e}`)
   }
 }
-
-fs.writeFileSync(path.join(dataDir, a.id + '.json'), JSON.stringify(a))
-
-const indexPath = path.join(dataDir, 'index.json')
-const list: AnalysisIndexEntry[] = fs.existsSync(indexPath) ? JSON.parse(fs.readFileSync(indexPath, 'utf8')) : []
 const changed = a.files.filter((f) => f.status !== 'unchanged')
-const entry: AnalysisIndexEntry = {
-  id: a.id,
-  repo: a.repo,
-  head: a.head,
-  title: a.title,
-  files: changed.length,
-  add: changed.reduce((s, f) => s + f.add, 0),
-  del: changed.reduce((s, f) => s + f.del, 0),
-  findings: {
-    violation: a.findings.filter((f) => f.severity === 'violation').length,
-    warning: a.findings.filter((f) => f.severity === 'warning').length,
-    info: a.findings.filter((f) => f.severity === 'info').length,
-  },
-}
-fs.writeFileSync(indexPath, JSON.stringify([entry, ...list.filter((e) => e.id !== a.id)], null, 2))
 
 console.log(`${a.id}: ${a.files.length} files on the map, ${changed.length} changed, ${a.edges.length} imports, ${a.impacted.length} impacted`)
 console.log(`model: ${a.model.name} (${a.model.kind}), ${a.model.modules.length} modules`)
@@ -84,4 +69,6 @@ if (a.changes) {
   if (a.changes.undescribed.length) console.log(`  ! ${a.changes.undescribed.length} hunks not described`)
   if (a.changes.invalid.length) console.log(`  ! ${a.changes.invalid.length} cited hunk ids don't exist`)
 }
+if (!a.changes) console.log('no change descriptions (add --describe to write them with the Claude API)')
+else if (cached && cached.headSha !== a.headSha && !describe) console.log('the cached change descriptions are for an older commit: add --describe to write new ones')
 console.log(`done in ${((Date.now() - started) / 1000).toFixed(1)}s`)

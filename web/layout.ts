@@ -3,6 +3,7 @@
 // put from one branch to the next (the map is the landmark; changes are overlays).
 
 import type { Analysis, FileInfo, FileRole } from '../shared/types.ts'
+import { BAR_H, HEAD_H, ROW_H } from './text/layout.ts'
 
 /** Analyses written before `role` existed only know about tests. */
 export const roleOf = (f: FileInfo): FileRole => f.role ?? (f.test ? 'test' : 'source')
@@ -46,7 +47,7 @@ export function buildMap(
   a: Analysis,
   hide: ReadonlySet<FileRole> = new Set(),
   only?: ReadonlySet<number>,
-  /** the map's window in CSS px: the column layout takes its shape, and sizes label strips for its starting zoom */
+  /** the map's window in CSS px: the column layout takes its shape */
   view?: { width: number; height: number },
 ): { root: MapNode; nodes: MapNode[]; fileNodes: MapNode[]; byPath: Map<string, MapNode> } {
   const nodes: MapNode[] = []
@@ -143,24 +144,10 @@ export function buildMap(
   root.x = 0
   root.y = 0
   if (only) {
-    // The changed-files view: files as equal-width columns, sized to their diffs (see layoutColumns).
-    // Label strips are in map units, but labels are a fixed screen size: size the strips so module and folder
-    // labels fit at the starting (whole-map) zoom. Taller strips make the map bigger and that zoom smaller, so
-    // repeat until they settle.
+    // The changed-files view: files as equal-width columns, sized to their diffs (see layoutColumns). No room is kept
+    // for labels: they float over the boxes as tags (see drawLabels in map.ts), so boxes hold only their files.
     const aspect = view && view.width > 0 && view.height > 0 ? view.width / view.height : ASPECT
-    let bands = { module: BOX_BAND, dir: BOX_BAND }
-    for (let i = 0; i < 6; i++) {
-      layoutColumns(root, a, aspect, bands)
-      if (!view || view.width <= 0 || view.height <= 0) break
-      const fit = Math.min(view.width / root.w, view.height / root.h) * FIT_FILL
-      const next = { module: MODULE_LABEL_PX / fit, dir: DIR_LABEL_PX / fit }
-      const settled = Math.abs(next.module - bands.module) < bands.module * 0.02
-      bands = next
-      if (settled) {
-        layoutColumns(root, a, aspect, bands)
-        break
-      }
-    }
+    layoutColumns(root, a, aspect)
   } else {
     root.w = WORLD_W
     root.h = WORLD_H
@@ -177,7 +164,7 @@ function layout(n: MapNode) {
   if (n.kind === 'file' || n.children.length === 0) return
   const s = Math.min(n.w, n.h)
   const pad = n.kind === 'root' ? 8 : s * 0.025
-  const band = n.kind === 'root' ? 0 : Math.min(s * 0.12, n.kind === 'module' ? 26 : 18 * Math.min(1, s / 60))
+  const band = 0 // labels float over the boxes (see drawLabels in map.ts): no strip kept for them
   const inner = { x: n.x + pad, y: n.y + pad + band, w: Math.max(n.w - pad * 2, 0.0001), h: Math.max(n.h - pad * 2 - band, 0.0001) }
   n.inner = inner
   // Top-level modules get a clear gap (about 7px at the whole-map view); folders and files a hairline.
@@ -259,36 +246,102 @@ function squarify(items: MapNode[], r: { x: number; y: number; w: number; h: num
 // balanced columns (each file into the shortest one), and packs those with its sub-folders in rows; modules are
 // packed the same way at the top. Box size here says how much changed, not how big the file is.
 
-/** A file column's width; the map's text scale is 1 when this is DIFF_W px on screen (web/map.ts). */
-export const COL_W = 560
-/** One diff row (12px text, line-height 1.4). */
-const LINE_H = 16.8
-/** Room above a file's text for its label, and above a folder's or module's contents for theirs. */
-const FILE_BAND = 26
-const BOX_BAND = 34
-/** Screen px a module's and a folder's label need above their contents at the starting zoom (see buildMap). */
-const MODULE_LABEL_PX = 28
-const DIR_LABEL_PX = 22
-/** How much of the window the whole-map view fills (as Camera.fitted does). */
-const FIT_FILL = 0.86
+/**
+ * A file column's width: 100 characters of 12px code (7.2px each) after the line-number gutter (11.5 characters) and
+ * the right margin (8px), so lines up to 100 characters don't wrap. The map's text scale is 1 when this is DIFF_W px
+ * on screen (web/map.ts).
+ */
+export const COL_W = 812
 const PAD = 14
 const GAP = 16
 const ROOT_GAP = 48
 /** The shape folders and the whole map aim for (width / height). */
 const ASPECT = 1.6
-/** Heights before packing stretches them: a file with no diff (an import's other end), and the base for one with a diff. */
+/** A file with no diff (an import's other end): just room for its tag. */
 const NO_DIFF_H = 140
-const MIN_H = 180
+/** The shortest file box with a diff, so a one-line change still has a box you can see and label. */
+const MIN_H = 120
+/** The tallest a file box gets from its diff alone; a longer diff scrolls inside it (select the file, then scroll). */
+const MAX_H = 1800
+/**
+ * Characters of code on a row at COL_W before it wraps, on its first visual line and on continuations: the same sums
+ * as text/layout.ts (12px monospace, 7.2px a character, after the number gutters, minus the right margin).
+ */
+const PER_FIRST = 99
+const PER_CONT = 97
 
-/** How tall a file's column is: its diff's rows (hunk headers, lines, and gap bars when it can expand). */
-function fileHeight(f: FileInfo): number {
-  if (!f.hunks?.length) return NO_DIFF_H
-  let rows = 0
-  for (const h of f.hunks) rows += h.lines.length + 1
-  if (f.text !== undefined) rows += f.hunks.length + 1
-  // Taller for a longer diff, but by the square root, not in proportion: a 400-row diff is about twice the height
-  // of a 100-row one. Packing then stretches boxes to fill the space anyway (see layoutColumns).
-  return MIN_H + LINE_H * 3 * Math.sqrt(rows)
+/** How many visual rows a line of code takes at COL_W (wrapped as text/layout.ts wraps it, near enough). */
+const visualRows = (s: string): number => {
+  const n = s.replace(/\t/g, '  ').length
+  return n <= PER_FIRST ? 1 : 1 + Math.ceil((n - PER_FIRST) / PER_CONT)
+}
+
+/**
+ * How tall a file's text is at COL_W, in the same text px the map draws it at (so box and text match):
+ * `shown`, its diff as first drawn (hunk headers, rows, a bar for each run of hidden lines); `full`, with every
+ * hidden line shown (what filling a taller box can grow to).
+ */
+function fileText(f: FileInfo): { shown: number; full: number } {
+  if (!f.hunks?.length) return { shown: NO_DIFF_H, full: NO_DIFF_H }
+  const fileLines = f.text?.split('\n') ?? null
+  if (fileLines && fileLines[fileLines.length - 1] === '') fileLines.pop()
+  const deleted = f.status === 'deleted'
+  let shown = 0
+  let hidden = 0
+  let prevEnd = 0
+  const gap = (from: number, to: number) => {
+    if (!fileLines || to < from) return
+    shown += BAR_H
+    for (let no = from; no <= to; no++) hidden += visualRows(fileLines[no - 1] ?? '') * ROW_H
+  }
+  for (const h of f.hunks) {
+    const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(h.header)
+    const start = m ? Number(deleted ? m[1] : m[2]) : prevEnd + 1
+    gap(prevEnd + 1, start - 1)
+    shown += HEAD_H
+    let count = 0
+    for (const l of h.lines) {
+      shown += visualRows(l.s) * ROW_H
+      if (l.t !== (deleted ? '+' : '-')) count++
+    }
+    prevEnd = Math.max(prevEnd, start + count - 1)
+  }
+  if (fileLines) gap(prevEnd + 1, fileLines.length)
+  // Every hidden line shown: its rows in, its bars out.
+  const bars = shown - f.hunks.reduce((t, h) => t + HEAD_H + h.lines.reduce((u, l) => u + visualRows(l.s) * ROW_H, 0), 0)
+  return { shown, full: shown - bars + hidden }
+}
+
+/** A file box's height before packing (its text, floored and capped) and the most it can usefully grow to. */
+function fileHeight(f: FileInfo): { h: number; max: number } {
+  if (!f.hunks?.length) return { h: NO_DIFF_H, max: NO_DIFF_H }
+  const t = fileText(f)
+  const h = Math.min(MAX_H, Math.max(MIN_H, t.shown))
+  return { h, max: Math.max(h, t.full) }
+}
+
+/**
+ * Shares `room` (a column's height, gaps taken out) among its files: each starts at its natural height and takes a
+ * share of the extra in proportion to it, but never past what it has to show (see fileHeight). What none of them can
+ * use is left empty at the column's foot, so no box is taller than its text.
+ */
+function shareColumn(nat: number[], max: number[], room: number): number[] {
+  const h = nat.slice()
+  let extra = room - nat.reduce((t, v) => t + v, 0)
+  let open = h.map((_, i) => i).filter((i) => max[i] > h[i] + 0.5)
+  while (extra > 0.5 && open.length) {
+    const weight = open.reduce((t, i) => t + nat[i], 0)
+    let used = 0
+    for (const i of open) {
+      const add = Math.min((extra * nat[i]) / weight, max[i] - h[i])
+      h[i] += add
+      used += add
+    }
+    extra -= used
+    open = open.filter((i) => max[i] > h[i] + 0.5)
+    if (used < 0.5) break
+  }
+  return h
 }
 
 interface Block {
@@ -355,11 +408,13 @@ function skyline(blocks: Block[], gap: number, aspect: number): { at: { x: numbe
  * `aspect` is the shape (width / height) the whole map aims for: the window's, so it fills the view. Folders aim
  * for ASPECT.
  */
-function layoutColumns(root: MapNode, a: Analysis, aspect = ASPECT, bands = { module: BOX_BAND, dir: BOX_BAND }) {
+function layoutColumns(root: MapNode, a: Analysis, aspect = ASPECT) {
   /** each child's position relative to its parent's content area */
   const local = new Map<MapNode, { x: number; y: number }>()
-  const inset = (n: MapNode) => (n.kind === 'root' ? { x: 0, y: 0 } : { x: PAD, y: PAD + (n.kind === 'module' ? bands.module : bands.dir) })
+  const inset = (n: MapNode) => (n.kind === 'root' ? { x: 0, y: 0 } : { x: PAD, y: PAD })
   const natural = new Map<MapNode, number>()
+  /** the tallest a file's box can be before it would run out of text to show (see fileHeight) */
+  const most = new Map<MapNode, number>()
   /** how much there is to read under a node: its files' column area at their natural heights */
   const contentOf = (n: MapNode): number => (n.kind === 'file' ? COL_W * (natural.get(n) ?? 0) : n.children.reduce((t, c) => t + contentOf(c), 0))
   /** a module's chosen shape, kept so laying out its parent (or growing it) doesn't reset it */
@@ -371,9 +426,11 @@ function layoutColumns(root: MapNode, a: Analysis, aspect = ASPECT, bands = { mo
    */
   const size = (n: MapNode, forcedH?: number, shape = ASPECT, forcedW?: number): void => {
     if (n.kind === 'file') {
+      const fh = fileHeight(a.files[n.file!])
       n.w = COL_W
-      n.h = fileHeight(a.files[n.file!])
-      natural.set(n, n.h)
+      n.h = fh.h
+      natural.set(n, fh.h)
+      most.set(n, fh.max)
       return
     }
     const gap = n.kind === 'root' ? ROOT_GAP : GAP
@@ -387,31 +444,37 @@ function layoutColumns(root: MapNode, a: Analysis, aspect = ASPECT, bands = { mo
       const total = files.reduce((t, f) => t + f.h + GAP, 0)
       const fit = forcedW !== undefined && groups.length === 0 ? Math.floor((forcedW - inset(n).x * 2 + GAP) / (COL_W + GAP)) : 0
       const count = Math.max(1, Math.min(files.length, fit || Math.round(Math.sqrt((Math.min(shape, 8) * total) / COL_W))))
-      const cols: MapNode[][] = Array.from({ length: count }, () => [])
-      const heights = new Array<number>(count).fill(0)
-      for (const f of files) {
-        const c = heights.indexOf(Math.min(...heights))
-        cols[c].push(f)
-        heights[c] += f.h + GAP
+      /** files into `k` balanced columns, each into the shortest so far */
+      const balance = (k: number) => {
+        const cols: MapNode[][] = Array.from({ length: k }, () => [])
+        const heights = new Array<number>(k).fill(0)
+        for (const f of files) {
+          const c = heights.indexOf(Math.min(...heights))
+          cols[c].push(f)
+          heights[c] += natural.get(f)! + GAP
+        }
+        return { cols, height: Math.max(...heights) - GAP }
       }
+      const packedCols = balance(count)
       const block: Block = {
         w: count * COL_W + (count - 1) * GAP,
-        h: Math.max(...heights) - GAP,
-        // Columns share the block's width (wider just wraps later; the text stays the same size), and every column
-        // ends at the block's bottom: a shorter column's files share the extra height in proportion to their size.
+        h: packedCols.height,
+        // Grown wider than its columns (to fill a hole beside it): more columns where whole ones fit, so no column is
+        // much wider than its code. Every column shares the block's width, and its files share the block's height up
+        // to what they have to show (shareColumn); what's left over stays empty at the column's foot.
         place: (x, y) => {
-          const colW = (block.w - (count - 1) * GAP) / count
+          const k = Math.max(1, Math.min(files.length, Math.floor((block.w + GAP + 0.5) / (COL_W + GAP))))
+          const { cols } = k === count ? packedCols : balance(k)
+          const colW = (block.w - (k - 1) * GAP) / k
           cols.forEach((col, c) => {
-            const own = col.reduce((t, f) => t + natural.get(f)!, 0)
-            const extra = block.h - (own + GAP * (col.length - 1))
+            const hs = shareColumn(col.map((f) => natural.get(f)!), col.map((f) => most.get(f)!), block.h - GAP * (col.length - 1))
             let yy = y
-            for (const f of col) {
-              const nat = natural.get(f)!
+            col.forEach((f, i) => {
               f.w = colW
-              f.h = nat + (own > 0 ? (extra * nat) / own : 0)
+              f.h = hs[i]
               local.set(f, { x: x + c * (colW + GAP), y: yy })
               yy += f.h + GAP
-            }
+            })
           })
         },
       }
@@ -480,23 +543,29 @@ function layoutColumns(root: MapNode, a: Analysis, aspect = ASPECT, bands = { mo
         x += width[k] + gap
       }
     }
-    // Then grow each block into the free space left around it: first down, to the next block under it or the bottom
-    // of the box; then right, to the next block beside it (at its new height) or the box's right edge. Down only
-    // across its own width and right only across its own (new) height, so no two blocks claim the same space.
-    blocks.forEach((b, k) => {
-      let limit = contentH
-      blocks.forEach((o, j) => {
-        if (j !== k && at[j].y >= at[k].y + b.h - 0.01 && at[j].x < at[k].x + b.w && at[j].x + o.w > at[k].x) limit = Math.min(limit, at[j].y - gap)
-      })
-      if (limit > at[k].y + b.h) b.h = limit - at[k].y
-    })
-    blocks.forEach((b, k) => {
+    // Packing leaves holes: a row that doesn't reach the right edge, a block shorter than its neighbours. Each block
+    // grows right, then down, into free space up to the next block or the edge, so the folder's background doesn't
+    // show through. A file only grows as far as it has text to show (shareColumn) and a wider file block gains columns,
+    // so this doesn't make tall empty boxes; folders lay themselves out again at the new size.
+    const overlaps = (a0: number, a1: number, b0: number, b1: number) => a0 < b1 - 0.01 && b0 < a1 - 0.01
+    const byRight = blocks.map((_, k) => k).sort((p, q) => at[q].x + blocks[q].w - (at[p].x + blocks[p].w))
+    for (const k of byRight) {
+      const b = blocks[k]
       let limit = contentW
       blocks.forEach((o, j) => {
-        if (j !== k && at[j].x >= at[k].x + b.w - 0.01 && at[j].y < at[k].y + b.h && at[j].y + o.h > at[k].y) limit = Math.min(limit, at[j].x - gap)
+        if (j !== k && at[j].x >= at[k].x + b.w - 0.01 && overlaps(at[k].y, at[k].y + b.h, at[j].y, at[j].y + o.h)) limit = Math.min(limit, at[j].x - gap)
       })
-      if (limit > at[k].x + b.w) b.w = limit - at[k].x
-    })
+      b.w = Math.max(b.w, limit - at[k].x)
+    }
+    const byBottom = blocks.map((_, k) => k).sort((p, q) => at[q].y + blocks[q].h - (at[p].y + blocks[p].h))
+    for (const k of byBottom) {
+      const b = blocks[k]
+      let limit = contentH
+      blocks.forEach((o, j) => {
+        if (j !== k && at[j].y >= at[k].y + b.h - 0.01 && overlaps(at[k].x, at[k].x + b.w, at[j].x, at[j].x + o.w)) limit = Math.min(limit, at[j].y - gap)
+      })
+      b.h = Math.max(b.h, limit - at[k].y)
+    }
     blocks.forEach((b, k) => b.place(at[k].x, at[k].y))
     n.w = contentW + i.x * 2
     n.h = contentH + i.y + bottom

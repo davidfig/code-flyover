@@ -1,5 +1,6 @@
-// The intended architecture: loaded from models/<repo>.json when present,
-// otherwise inferred from the repo's layout (workspace folders and top-level folders).
+// The intended architecture: the repo's own .semantic-zoom.json (read from the base commit, so a branch can't loosen
+// the rules it's checked against), else models/<repo>.json here, else inferred from the repo's layout (workspace
+// folders and top-level folders).
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -22,13 +23,18 @@ export interface LoadedModel {
 
 const GROUP_DIRS = new Set(['crates', 'packages', 'apps', 'libs', 'services'])
 
-export function loadModel(modelsDir: string, repoName: string, files: string[]): LoadedModel {
+/** The architecture model's file name at an analyzed repo's root. */
+export const REPO_MODEL_FILE = '.semantic-zoom.json'
+
+/** `repoModel`: the text of the repo's own REPO_MODEL_FILE at the base commit, if it has one. */
+export function loadModel(modelsDir: string, repoName: string, files: string[], repoModel?: string): LoadedModel {
   const file = path.join(modelsDir, `${repoName}.json`)
   const modules: ModuleDef[] = []
   let model: ArchitectureModel
   let noThirdParty = new Set<string>()
-  if (fs.existsSync(file)) {
-    const m = JSON.parse(fs.readFileSync(file, 'utf8')) as ModelFile
+  const text = repoModel ?? (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : undefined)
+  if (text !== undefined) {
+    const m = JSON.parse(text) as ModelFile
     for (const mod of m.modules) {
       modules.push({ id: mod.id, label: mod.label ?? mod.id, paths: mod.paths, description: mod.description, modeled: true })
     }
@@ -37,7 +43,7 @@ export function loadModel(modelsDir: string, repoName: string, files: string[]):
   } else {
     model = {
       name: 'Inferred from folders',
-      source: 'inferred: no models/' + repoName + '.json, so the base branch’s dependencies count as the intended ones',
+      source: `inferred: no ${REPO_MODEL_FILE} in the repo (or models/${repoName}.json here), so the base branch’s dependencies count as the intended ones`,
       kind: 'inferred',
       modules,
       allowed: {},

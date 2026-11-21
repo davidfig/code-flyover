@@ -1,7 +1,7 @@
 import path from 'node:path/posix'
 import * as git from './git.ts'
 import { neededForDeps, RS_EXT, snapshotDeps, TS_EXT, type Dep } from './deps.ts'
-import { isAllowed, loadModel, moduleOf } from './model.ts'
+import { isAllowed, loadModel, moduleOf, REPO_MODEL_FILE } from './model.ts'
 import type { Analysis, FileEdge, FileInfo, FileRole, FileStatus, Finding } from '../shared/types.ts'
 
 export interface AnalyzeOptions {
@@ -44,7 +44,8 @@ export function analyze(opts: AnalyzeOptions): Analysis {
   // ---------- files on the map ----------
   const mapPaths = headFiles.filter(isCode)
   for (const d of diffFiles) if (d.status === 'deleted' && isCode(d.path)) mapPaths.push(d.path)
-  const { model, noThirdParty } = loadModel(opts.modelsDir, repoName, mapPaths)
+  const repoModel = baseFiles.includes(REPO_MODEL_FILE) ? git.readFiles(repo, baseSha, [REPO_MODEL_FILE]).get(REPO_MODEL_FILE) : undefined
+  const { model, noThirdParty } = loadModel(opts.modelsDir, repoName, mapPaths, repoModel)
 
   const files: FileInfo[] = mapPaths.map((p) => {
     const d = diffByPath.get(p)
@@ -100,6 +101,15 @@ export function analyze(opts: AnalyzeOptions): Analysis {
 
   // ---------- findings ----------
   const findings: Finding[] = []
+  // The branch edits the architecture model itself: it's checked against the base's, so say so.
+  const modelEdit = diffFiles.find((d) => d.path === REPO_MODEL_FILE)
+  if (modelEdit)
+    findings.push({
+      severity: 'warning',
+      kind: 'model-changed',
+      title: `This branch ${modelEdit.status === 'added' ? 'adds' : modelEdit.status === 'deleted' ? 'deletes' : 'changes'} the architecture model (${REPO_MODEL_FILE})`,
+      detail: 'The branch is checked against the base commit’s model. Review the model change itself: it decides what counts as a violation from now on.',
+    })
   const evidence = (es: FileEdge[], n = 6) =>
     es.slice(0, n).map((e) => `${files[e.from].path}: ${e.line ?? '→ ' + files[e.to].path}`).concat(es.length > n ? [`…and ${es.length - n} more`] : [])
 

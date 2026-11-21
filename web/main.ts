@@ -1,5 +1,4 @@
-import './style.css'
-import type { Analysis, AnalysisIndexEntry, Finding } from '../shared/types.ts'
+import { DESCRIBE_MODEL, type Analysis, type ChangeSet, type Finding } from '../shared/types.ts'
 import { esc, ZoomMap, type Level } from './map.ts'
 import { renderDiffView } from './diffView.ts'
 import { roleOf, type MapNode } from './layout.ts'
@@ -90,8 +89,12 @@ function setupShowMenu() {
       btn.focus()
     }
   })
+  // Tabbing out of the menu closes it. Only when focus lands on something else: Safari and the desktop app (WebKit)
+  // don't focus a checkbox you click, so a click inside moves focus to nothing (relatedTarget null). Clicks outside
+  // are the pointerdown handler's job.
   pop.addEventListener('focusout', (e) => {
-    if (!pop.contains(e.relatedTarget as Node | null) && e.relatedTarget !== btn) set(false)
+    const to = e.relatedTarget as Node | null
+    if (to && !pop.contains(to) && to !== btn) set(false)
   })
 }
 
@@ -103,22 +106,204 @@ function updateShowCount() {
 }
 let DEFAULTS: ZoomMap['opts']
 
+// ---------- the desktop app (src-tauri) ----------
+
+/** What the desktop app's window offers the page (Tauri's global API); undefined in a browser tab. */
+interface TauriGlobal {
+  dialog: { open(options: { directory: boolean; title?: string; defaultPath?: string }): Promise<string | null> }
+  event: { listen(name: string, handler: (e: { payload: string }) => void): Promise<() => void> }
+}
+const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__
+
+// ---------- repos and branches (server/api.ts) ----------
+
+interface Repo { id: string; name: string; path: string }
+interface Branch { name: string; sha: string; date: string; subject: string; ahead: number; behind: number; worktree?: string }
+
+let repos: Repo[] = []
+/** What's open: from the URL's hash, #repo=<id>&head=<branch>&base=<ref> (base left out: the repo's default). */
+let current: { repo: Repo; head: string; base: string } | null = null
+let branchList: { repo: string; base: string; branches: Branch[] } | null = null
+const LAST_REPO_KEY = 'semantic-zoom:lastRepo'
+
+async function api<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, { cache: 'no-store', ...init, headers: init?.body ? { 'Content-Type': 'application/json' } : undefined })
+  const body = await res.json().catch(() => ({ error: `${res.status} ${res.statusText}` }))
+  if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`)
+  return body as T
+}
+
+const hashState = () => new URLSearchParams(location.hash.slice(1))
+function go(repo: string, head?: string, base?: string) {
+  const p = new URLSearchParams({ repo })
+  if (head) p.set('head', head)
+  if (base) p.set('base', base)
+  location.hash = p.toString()
+}
+
+const ago = (iso: string) => {
+  const s = (Date.now() - Date.parse(iso)) / 1000
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))}m ago`
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`
+  if (s < 86400 * 60) return `${Math.round(s / 86400)}d ago`
+  return `${Math.round(s / (86400 * 30))}mo ago`
+}
+
+function panelMessage(html: string) {
+  $('#panel-body').innerHTML = `<div class="empty">${html}</div>`
+  wireAddRepo()
+}
+
+const addRepoButton = `<button type="button" class="add-repo">Add a repo…</button>`
+function wireAddRepo() {
+  document.querySelectorAll<HTMLButtonElement>('.add-repo').forEach((b) => (b.onclick = () => addRepo()))
+}
+
+async function addRepo() {
+  // In the desktop app, the system's folder picker; in a browser, which can't hand out paths, type one.
+  const folder = tauri
+    ? await tauri.dialog.open({ directory: true, title: 'Open a repo (or any folder inside one)' })
+    : window.prompt('Path to a git repo (or any folder inside one):', '~/Programming/')
+  if (!folder) return renderRepoPicker()
+  try {
+    const repo = await api<Repo>('/api/repos', { method: 'POST', body: JSON.stringify({ path: folder }) })
+    repos = await api<Repo[]>('/api/repos')
+    go(repo.id)
+  } catch (e) {
+    alert(e instanceof Error ? e.message : String(e))
+    renderRepoPicker()
+  }
+}
+
+async function removeRepo(repo: Repo) {
+  if (!confirm(`Remove ${repo.name} from the list? (${repo.path} itself isn't touched.)`)) return renderRepoPicker()
+  repos = await api<Repo[]>(`/api/repos?repo=${encodeURIComponent(repo.id)}`, { method: 'DELETE' })
+  if (repos.length) go(repos[0].id)
+  else {
+    current = null
+    location.hash = ''
+    route()
+  }
+}
+
+function renderRepoPicker() {
+  const sel = $<HTMLSelectElement>('#repo')
+  const open = current?.repo
+  sel.innerHTML =
+    repos.map((r) => `<option value="${esc(r.id)}" title="${esc(r.path)}">${esc(r.name)}</option>`).join('') +
+    `<optgroup label="──────────"><option value=":add">Add a repo…</option>${open ? `<option value=":remove">Remove ${esc(open.name)} from the list</option>` : ''}</optgroup>`
+  sel.value = open?.id ?? ''
+}
+
+function renderBranchPicker() {
+  const sel = $<HTMLSelectElement>('#branch')
+  if (!current || !branchList || branchList.repo !== current.repo.id) {
+    sel.innerHTML = ''
+    sel.disabled = true
+    return
+  }
+  sel.disabled = false
+  const list = branchList.branches
+  const known = list.some((b) => b.name === current!.head)
+  sel.innerHTML =
+    (known ? '' : `<option value="${esc(current.head)}">${esc(current.head)}</option>`) +
+    list
+      .map((b) => {
+        const where = b.worktree ? ' · checked out' : ''
+        return `<option value="${esc(b.name)}" title="${esc(b.subject)}${b.worktree ? `\n${esc(b.worktree)}` : ''}">${esc(b.name)} · ${b.ahead} ahead · ${ago(b.date)}${where}</option>`
+      })
+      .join('')
+  sel.value = current.head
+}
+
+async function loadBranches(repo: Repo) {
+  const r = await api<{ base: string; branches: Branch[] }>(`/api/branches?repo=${encodeURIComponent(repo.id)}`)
+  branchList = { repo: repo.id, ...r }
+}
+
+let routing = 0
+/** Opens what the URL's hash names, filling in a repo and branch if it leaves them out. */
+async function route() {
+  const seq = ++routing
+  const p = hashState()
+  if (!repos.length) {
+    current = null
+    renderRepoPicker()
+    renderBranchPicker()
+    return panelMessage(`<h2>No repos yet</h2><p>Run <code>semantic-zoom</code> in a repo, or add one here.</p>${addRepoButton}`)
+  }
+  let lastRepo: string | null = null
+  try { lastRepo = localStorage.getItem(LAST_REPO_KEY) } catch {}
+  const repo = repos.find((r) => r.id === p.get('repo')) ?? repos.find((r) => r.id === lastRepo) ?? repos[0]
+  if (p.get('repo') !== repo.id) return go(repo.id)
+  try { localStorage.setItem(LAST_REPO_KEY, repo.id) } catch {}
+  current = { repo, head: p.get('head') ?? '', base: p.get('base') ?? '' }
+  renderRepoPicker()
+  if (branchList?.repo !== repo.id) {
+    renderBranchPicker()
+    panelMessage(`<p>Reading ${esc(repo.name)}’s branches…</p>`)
+    try {
+      await loadBranches(repo)
+    } catch (e) {
+      return panelMessage(`<h2>Can't read ${esc(repo.name)}</h2><p class="error">${esc(e instanceof Error ? e.message : String(e))}</p>${addRepoButton}`)
+    }
+    if (seq !== routing) return
+  }
+  if (!current.head) {
+    const first = branchList!.branches[0]
+    if (!first) {
+      renderBranchPicker()
+      return panelMessage(`<h2>Nothing to review in ${esc(repo.name)}</h2><p>It has no local branches besides <code>${esc(branchList!.base)}</code>.</p>`)
+    }
+    return go(repo.id, first.name)
+  }
+  current.base ||= branchList!.base
+  renderBranchPicker()
+  panelMessage(`<p>Analyzing <b>${esc(current.head)}</b> against <code>${esc(current.base)}</code>…</p>`)
+  try {
+    const a = await api<Analysis>(`/api/analysis?${new URLSearchParams({ repo: repo.id, head: current.head, base: current.base })}`)
+    if (seq !== routing) return
+    analysis = a
+  } catch (e) {
+    if (seq !== routing) return
+    return panelMessage(`<h2>Couldn't analyze ${esc(current.head)}</h2><p class="error">${esc(e instanceof Error ? e.message : String(e))}</p>`)
+  }
+  map.load(analysis)
+  renderPanel()
+}
+
+/** Back in the window: the branch may have new commits (say, from a Claude Code session). Offer to update. */
+async function checkForNewCommits() {
+  if (!current || !analysis) return
+  const { repo, head } = current
+  try {
+    await loadBranches(repo)
+  } catch {
+    return
+  }
+  renderBranchPicker()
+  const b = branchList?.branches.find((x) => x.name === head)
+  const el = document.querySelector<HTMLElement>('#newer')
+  if (!el || current?.head !== head) return
+  if (b && b.sha !== analysis.headSha) {
+    el.innerHTML = `New commits on ${esc(head)} since this map was made. <button type="button">Update</button>`
+    el.hidden = false
+    el.querySelector('button')!.onclick = () => route()
+  } else el.hidden = true
+}
+
+// Uncaught errors go to the server's output too: in the desktop app there's no console to read them in.
+const report = (message: string) => {
+  try {
+    fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }) })
+  } catch {}
+}
+window.addEventListener('error', (e) => report(`${e.message} at ${e.filename}:${e.lineno}:${e.colno}${e.error?.stack ? '\n' + e.error.stack : ''}`))
+window.addEventListener('unhandledrejection', (e) => report(`Unhandled: ${e.reason instanceof Error ? e.reason.stack ?? e.reason.message : String(e.reason)}`))
+
 async function main() {
   setupSplitter()
   setupShowMenu()
-  const index: AnalysisIndexEntry[] = await fetch('data/index.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : []))
-  const picker = $<HTMLSelectElement>('#picker')
-  if (index.length === 0) {
-    $('#panel-body').innerHTML = '<p class="empty">No analyses yet. Run <code>npm run analyze -- ../repo branch</code>.</p>'
-    return
-  }
-  picker.innerHTML = index
-    .map((e) => `<option value="${esc(e.id)}">${esc(e.repo)} · ${esc(e.head)} (${e.files} files)</option>`)
-    .join('')
-  picker.onchange = () => {
-    location.hash = picker.value
-  }
-
   map = new ZoomMap($('#map'), {
     onSelect: (n) => showSelection(n),
     onView: (level, trail) => showView(level, trail),
@@ -126,19 +311,39 @@ async function main() {
   })
   await map.init()
 
-
-  const open = async () => {
-    const id = decodeURIComponent(location.hash.slice(1)) || index[0].id
-    picker.value = id
-    analysis = await fetch(`data/${id}.json`, { cache: 'no-store' }).then((r) => r.json())
-    map.load(analysis)
-    renderPanel()
+  const repoSel = $<HTMLSelectElement>('#repo')
+  repoSel.onchange = () => {
+    if (repoSel.value === ':add') return addRepo()
+    if (repoSel.value === ':remove') return current && removeRepo(current.repo)
+    go(repoSel.value)
   }
-  window.addEventListener('hashchange', open)
-  await open()
+  const branchSel = $<HTMLSelectElement>('#branch')
+  branchSel.onchange = () => current && go(current.repo.id, branchSel.value)
+  window.addEventListener('focus', () => checkForNewCommits())
+  if (tauri) {
+    // The window's title bar is the header: room for the window buttons, and dragging it moves the window.
+    document.documentElement.classList.add('tauri')
+    for (const el of [$('header'), $('header .brand')]) el.setAttribute('data-tauri-drag-region', '')
+    tauri.event.listen('native-menu', ({ payload }) => {
+      if (payload === 'open-repo') addRepo()
+      else if (payload === 'whole-map') $('#fit').click()
+      else if (payload === 'update-branch') {
+        branchList = null // read the branches again too
+        route()
+      }
+    })
+  }
+
+  try {
+    repos = await api<Repo[]>('/api/repos')
+  } catch (e) {
+    return panelMessage(`<h2>The app's server isn't answering</h2><p class="error">${esc(e instanceof Error ? e.message : String(e))}</p>`)
+  }
+  window.addEventListener('hashchange', () => route())
+  route()
 
   DEFAULTS = { ...map.opts }
-  for (const id of ['showAllImports', 'showImpacted', 'dimUnchanged', 'showTests', 'showLocales', 'showUnchanged'] as const) {
+  for (const id of ['showImpacted', 'dimUnchanged', 'showTests', 'showLocales', 'showUnchanged', 'showTiming'] as const) {
     const box = $<HTMLInputElement>('#' + id)
     let saved: string | null = null
     try { saved = localStorage.getItem('semantic-zoom:' + id) } catch {}
@@ -166,11 +371,18 @@ async function main() {
       setActive(-1)
       document.querySelectorAll('.change.active').forEach((x) => x.classList.remove('active'))
     }
-    if (e.key === 'j' || e.key === 'k') {
+    if ((e.key === 'j' || e.key === 'k') && analysis) {
       const next = Math.max(0, Math.min(analysis.findings.length - 1, activeFinding + (e.key === 'j' ? 1 : -1)))
       goToFinding(next)
     }
   })
+}
+
+/** What the branch is compared with: the repo's default base, or any other branch. */
+function baseSelect() {
+  if (!current || !branchList) return `<code>${esc(analysis.base)}</code>`
+  const names = [...new Set([branchList.base, current.base, ...branchList.branches.map((b) => b.name).filter((n) => n !== current!.head)])]
+  return `<select id="base" aria-label="Compared with">${names.map((n) => `<option value="${esc(n)}"${n === current!.base ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`
 }
 
 function renderPanel() {
@@ -186,7 +398,8 @@ function renderPanel() {
   $('#panel-body').innerHTML = `
     <section class="pr">
       <h1>${esc(a.title)}</h1>
-      <div class="sub"><b>${esc(a.repo)}</b> · ${esc(a.head)} → ${esc(a.base)} · ${a.commits.length} commit${a.commits.length === 1 ? '' : 's'}</div>
+      <div id="newer" class="newer" hidden></div>
+      <div class="sub"><b>${esc(a.repo)}</b> · ${esc(a.head)} compared with ${baseSelect()} · ${a.commits.length} commit${a.commits.length === 1 ? '' : 's'}</div>
       <div class="stats"><span>${source.length} source files</span><span class="plus">+${add}</span><span class="minus">−${del}</span>${muted.length ? `<span title="Tests, translations and generated files: on the map but muted">${muted.length} tests/translations</span>` : ''}${a.otherChanges.length ? `<span>${a.otherChanges.length} other files</span>` : ''}</div>
       <details><summary>Commits</summary><ul class="commits">${commits}</ul></details>
     </section>
@@ -211,6 +424,10 @@ function renderPanel() {
     el.onmouseenter = () => map.mark(map.nodesFor(changeFiles(i)))
     el.onmouseleave = () => map.mark([])
   })
+  const baseSel = document.querySelector<HTMLSelectElement>('#base')
+  if (baseSel) baseSel.onchange = () => current && go(current.repo.id, current.head, baseSel.value === branchList?.base ? undefined : baseSel.value)
+  const describeBtn = document.querySelector<HTMLButtonElement>('#describe')
+  if (describeBtn) describeBtn.onclick = () => describe(describeBtn)
   activeFinding = -1
 }
 
@@ -221,9 +438,38 @@ function changeFiles(i: number): string[] {
   return [...new Set(cs.undescribed.map((h) => h.slice(0, h.lastIndexOf('#'))))]
 }
 
+/** The button that asks the dev server to write the descriptions (vite.config.ts): the only way the viewer calls a model. */
+function describeButton(label: string) {
+  return `<div class="describe"><button type="button" id="describe">${label}</button><span class="hint">One Claude API call (${esc(DESCRIBE_MODEL)}), about a minute. Saved, so it's only written once per commit.</span><div class="error" hidden></div></div>`
+}
+
+async function describe(btn: HTMLButtonElement) {
+  if (!current) return
+  const { repo, head, base } = current
+  const id = analysis.id
+  const box = btn.parentElement!
+  const error = box.querySelector<HTMLElement>('.error')!
+  btn.disabled = true
+  btn.textContent = 'Describing…'
+  error.hidden = true
+  try {
+    const cs = await api<ChangeSet>('/api/describe', { method: 'POST', body: JSON.stringify({ repo: repo.id, head, base }) })
+    if (analysis.id !== id) return // another branch was opened meanwhile: it's saved for when you come back
+    analysis.changes = cs
+    map.setChanges(analysis.changes)
+    renderPanel()
+  } catch (e) {
+    btn.disabled = false
+    btn.textContent = 'Try again'
+    error.textContent = e instanceof Error ? e.message : String(e)
+    error.hidden = false
+  }
+}
+
 function changesHtml() {
   const cs = analysis.changes
-  if (!cs) return `<section><h2>What changed</h2><p class="none">No descriptions yet. Run the analyzer without <code>--no-describe</code>.</p></section>`
+  if (!cs)
+    return `<section><h2>What changed</h2><p class="none">No AI descriptions for this branch. They're written only when you ask.</p>${describeButton('Describe changes')}</section>`
   const items = cs.items
     .map(
       (c, i) => `<li class="change" data-i="${i}"><div class="ct"><span class="n">${i + 1}</span>${esc(c.title)}</div><div class="cs">${esc(c.summary)}</div><div class="cf">${c.files.length} file${c.files.length === 1 ? '' : 's'} · ${c.hunks.length} hunk${c.hunks.length === 1 ? '' : 's'}</div></li>`,
@@ -232,9 +478,11 @@ function changesHtml() {
   const gap = cs.undescribed.length
     ? `<li class="change gap" data-i="-1"><div class="ct"><span class="n">!</span>Not described: ${cs.undescribed.length} hunk${cs.undescribed.length === 1 ? '' : 's'}</div><div class="cs">No description covers these. Read them yourself.</div><ul class="ev">${cs.undescribed.slice(0, 12).map((h) => `<li><code>${esc(h)}</code></li>`).join('')}</ul></li>`
     : ''
+  const stale = cs.headSha !== analysis.headSha ? `<p class="none">These describe an older commit of the branch.</p>${describeButton('Describe again')}` : ''
   const invalid = cs.invalid.length ? `<div class="hint">${cs.invalid.length} hunk id${cs.invalid.length === 1 ? '' : 's'} the model cited didn't exist and were dropped.</div>` : ''
   return `<section>
       <h2>What changed <span class="tag ai" title="Written by ${esc(cs.by)} from the diff. Every source hunk is either in a change or listed as not described.">AI-written</span></h2>
+      ${stale}
       <ol class="changes-list">${items}${gap}</ol>
       ${invalid}
     </section>`
@@ -305,16 +553,25 @@ function showSelection(n: MapNode | null) {
   const a = analysis
   const filesIn = (m: MapNode): number[] => (m.kind === 'file' ? [m.file!] : m.children.flatMap(filesIn))
   const inside = new Set(filesIn(n))
-  const edgesOut = a.edges.filter((e) => inside.has(e.from) && !inside.has(e.to) && e.state !== 'both')
-  const edgesIn = a.edges.filter((e) => inside.has(e.to) && !inside.has(e.from) && e.state !== 'both')
+  // A file lists all its imports and importers (the map outlines them in the same colours); a folder or module only
+  // the ones this branch changed, since all of a folder's imports would be a long list of the usual.
+  const all = n.kind === 'file'
+  const byState = { added: 0, removed: 1, both: 2 }
+  const edgesOut = a.edges.filter((e) => inside.has(e.from) && !inside.has(e.to) && (all || e.state !== 'both')).sort((x, y) => byState[x.state] - byState[y.state])
+  const edgesIn = a.edges.filter((e) => inside.has(e.to) && !inside.has(e.from) && (all || e.state !== 'both')).sort((x, y) => byState[x.state] - byState[y.state])
   const edgeList = (list: typeof edgesOut, dir: 'out' | 'in') =>
     list
-      .slice(0, 30)
+      .slice(0, 40)
       .map((e) => {
-        const other = a.files[dir === 'out' ? e.to : e.from]
-        return `<li class="${e.state}"><span class="st ${e.state}">${e.state === 'added' ? 'new' : 'removed'}</span> ${dir === 'out' ? '→' : '←'} ${esc(other.path)}${e.line ? `<code>${esc(e.line)}</code>` : ''}</li>`
+        const i = dir === 'out' ? e.to : e.from
+        const other = a.files[i]
+        const tag = e.state === 'both' ? '' : `<span class="st ${e.state}">${e.state === 'added' ? 'new' : 'removed'}</span> `
+        // Clicking one flies to it, if it's on the map (a test with Tests off isn't).
+        const name = map.hasFile(i) && e.state !== 'removed' ? `<a class="goto" data-file="${i}">${esc(other.path)}</a>` : `<span class="off">${esc(other.path)}</span>`
+        return `<li class="${e.state}">${tag}${name}${e.line ? `<code>${esc(e.line)}</code>` : ''}</li>`
       })
-      .join('')
+      .join('') + (list.length > 40 ? `<li class="more">and ${list.length - 40} more</li>` : '')
+  const heading = (label: string, sw: string, list: typeof edgesOut) => `<h3>${all ? `<i class="sw ${sw}"></i>` : ''}${label} (${list.length})</h3>`
   const info = n.kind === 'file' ? a.files[n.file!] : null
   const mod = a.model.modules.find((m) => m.id === n.module)
   const partOf = info && a.changes ? a.changes.items.flatMap((c, i) => (c.files.includes(info.path) ? [`<a class="partof" data-i="${i}">${i + 1}. ${esc(c.title)}</a>`] : [])) : []
@@ -324,13 +581,14 @@ function showSelection(n: MapNode | null) {
     <div class="sub">${n.kind}${mod?.description ? ` · ${esc(mod.description)}` : ''}</div>
     ${partOf.length ? `<div class="partofs">Part of ${partOf.join(', ')}</div>` : ''}
     ${info ? `<div class="stats"><span class="st ${info.status}">${info.status}</span>${info.oldPath ? `<span>from ${esc(info.oldPath)}</span>` : ''}<span>${info.lines} lines</span><span class="plus">+${info.add}</span><span class="minus">−${info.del}</span></div>` : `<div class="stats"><span>${n.changed} changed files</span><span class="plus">+${n.add}</span><span class="minus">−${n.del}</span></div>`}
-    ${edgesOut.length ? `<h3>Imports changed (${edgesOut.length})</h3><ul class="edges">${edgeList(edgesOut, 'out')}</ul>` : ''}
-    ${edgesIn.length ? `<h3>Importers changed (${edgesIn.length})</h3><ul class="edges">${edgeList(edgesIn, 'in')}</ul>` : ''}
+    ${edgesOut.length ? `${heading(all ? 'Imports' : 'Imports changed', 'imports', edgesOut)}<ul class="edges">${edgeList(edgesOut, 'out')}</ul>` : ''}
+    ${edgesIn.length ? `${heading(all ? 'Imported by' : 'Importers changed', 'importers', edgesIn)}<ul class="edges">${edgeList(edgesIn, 'in')}</ul>` : ''}
     ${info?.hunks ? `<h3>Diff</h3><div class="diff panel-diff"></div>` : ''}
   `
   el.querySelectorAll<HTMLElement>('.partof').forEach((x) => (x.onclick = () => goToChange(Number(x.dataset.i))))
+  el.querySelectorAll<HTMLElement>('.goto').forEach((x) => (x.onclick = () => map.goToFile(Number(x.dataset.file))))
   const panelDiff = el.querySelector<HTMLElement>('.panel-diff')
-  if (panelDiff && info) renderDiffView(panelDiff, info)
+  if (panelDiff && info) renderDiffView(panelDiff, info, { selfScroll: true })
   el.scrollIntoView({ block: 'nearest' })
 }
 
