@@ -24,6 +24,13 @@ const DIFF_W = 560
 /** Text this small isn't drawn; it fades in up to DIFF_TEXT_FULL (about 3px to 7px text). */
 const DIFF_TEXT_FROM = 0.25
 const DIFF_TEXT_FULL = 0.55
+/**
+ * Diffs are switched on (invisibly) from DIFF_WARM_FROM, a few per frame, so they're already painted when the text
+ * appears; and stay on until the text scale drops below DIFF_WARM_OFF.
+ */
+const DIFF_WARM_FROM = DIFF_TEXT_FROM * 0.55
+const DIFF_WARM_OFF = DIFF_TEXT_FROM * 0.4
+const DIFF_WARM_PER_FRAME = 2
 /** Past this the text stops growing and more of each line shows instead. */
 const DIFF_MAX_SCALE = 1.6
 /** Text px at the top of a file's box kept for its label (see drawDiffs). */
@@ -36,6 +43,8 @@ const LABEL_FROM_PX = 40
 const LABEL_FULL_PX = 72
 /** Wheel events further apart than this start a new gesture (as in gl/input.ts). */
 const WHEEL_GESTURE_GAP_MS = 200
+/** How long after the camera stops the text goes back from GPU layers to sharp rendering. */
+const SETTLE_MS = 160
 /** The selected box's outline, in CSS px. */
 const SELECT_PX = 3
 /** How long the camera takes to fly to something. */
@@ -118,6 +127,28 @@ const C = {
   edgeAll: 0x8a8578,
   select: 0x1f6feb,
 }
+
+/**
+ * Writes a style only when its value changed. An unchanged write still costs the browser a style pass, and a size
+ * written just before a scroll position forces a layout on the spot: done for every diff and label each frame,
+ * that's what made zooming hitch.
+ */
+const written = new WeakMap<HTMLElement, Record<string, string>>()
+function setStyle(el: HTMLElement, prop: 'transform' | 'width' | 'height' | 'maxWidth' | 'opacity' | 'display' | 'visibility', value: string) {
+  let m = written.get(el)
+  if (!m) written.set(el, (m = {}))
+  if (m[prop] === value) return
+  m[prop] = value
+  el.style[prop] = value
+}
+function setClass(el: HTMLElement, value: string) {
+  if (el.className !== value) el.className = value
+}
+/** Sets scrollTop only when it moves by a pixel or more (a write forces a layout). */
+function setScroll(el: HTMLElement, top: number) {
+  if (Math.abs(el.scrollTop - top) >= 1) el.scrollTop = top
+}
+const px = (v: number) => `${Math.round(v * 2) / 2}px`
 
 /** Runs `cb` when the browser is idle (Safari has no requestIdleCallback: a short timeout stands in). */
 function idle(cb: (deadline: { timeRemaining(): number }) => void) {
@@ -207,6 +238,10 @@ export class ZoomMap {
   private pending = false
   private lastFrame = 0
   private lastLevel = ''
+  private lastCamera = ''
+  /** diffs are switched on (warming up or showing): see drawDiffs */
+  private textWarm = false
+  private settleTimer: ReturnType<typeof setTimeout> | null = null
   /** the current wheel gesture: when its last event came, and the file it's scrolling (null: the map) */
   private wheelGesture = { last: -Infinity, file: null as number | null }
   private userMoved = false
@@ -589,6 +624,7 @@ export class ZoomMap {
   private frame() {
     if (!this.a) return
     const cam = this.camera
+    this.noteMotion()
     const v = cam.view
     const vb: View = { x: v.x, y: v.y, width: v.w, height: v.h }
     const s = cam.scale
@@ -614,6 +650,21 @@ export class ZoomMap {
       this.lastLevel = key
       this.events.onView(level, trail)
     }
+  }
+
+  /**
+   * While the camera moves, the text layers are GPU layers (#map.moving, see style.css): scaling one is then
+   * moving a picture, not re-rendering every line of code each frame. Shortly after it stops they go back to
+   * ordinary layers and render once, sharp.
+   */
+  private noteMotion() {
+    const c = this.camera
+    const key = `${c.x.toFixed(3)},${c.y.toFixed(3)},${c.scale.toFixed(5)}`
+    if (key === this.lastCamera) return
+    this.lastCamera = key
+    this.host.classList.add('moving')
+    if (this.settleTimer) clearTimeout(this.settleTimer)
+    this.settleTimer = setTimeout(() => this.host.classList.remove('moving'), SETTLE_MS)
   }
 
   private edgeKind(e: FileEdge): 'violation' | 'added' | 'removed' | 'existing' | null {
@@ -763,7 +814,7 @@ export class ZoomMap {
         this.labelPool.push(el)
       }
       used++
-      el.className = 'label ' + n.kind + (n.changed ? ' changed' : '')
+      setClass(el, 'label ' + n.kind + (n.changed ? ' changed' : ''))
       // The name comes first and is only cut when it alone doesn't fit. Extras (a file's status tag, a folder's
       // counts) are added, in order, only while they fit beside the whole name.
       const font = LABEL_FONT[n.kind as 'module' | 'dir' | 'file']
@@ -794,17 +845,17 @@ export class ZoomMap {
       const boxBottom = (n.y - vb.y) * s + h
       if (sy + lineH > boxBottom) {
         used--
-        el.style.display = 'none'
+        setStyle(el, 'display', 'none')
         return null
       }
       if (el.dataset.html !== html) {
         el.innerHTML = html
         el.dataset.html = html
       }
-      el.style.transform = `translate(${sx}px, ${sy}px)`
-      el.style.maxWidth = `${avail}px`
-      el.style.opacity = String(smoothstep(LABEL_FROM_PX, LABEL_FULL_PX, Math.min(w, h * 3)))
-      el.style.display = ''
+      setStyle(el, 'transform', `translate(${px(sx)}, ${px(sy)})`)
+      setStyle(el, 'maxWidth', px(avail))
+      setStyle(el, 'opacity', smoothstep(LABEL_FROM_PX, LABEL_FULL_PX, Math.min(w, h * 3)).toFixed(2))
+      setStyle(el, 'display', '')
       return { x0: sx, y0: sy, x1: right, y1: sy + lineH }
     }
     const walk = (n: MapNode, above: Box[]) => {
@@ -822,7 +873,7 @@ export class ZoomMap {
       }
     }
     walk(this.root, [])
-    for (let i = used; i < this.labelPool.length; i++) this.labelPool[i].style.display = 'none'
+    for (let i = used; i < this.labelPool.length; i++) setStyle(this.labelPool[i], 'display', 'none')
   }
 
   /** The diff text's scale at the current zoom (see DIFF_W). */
@@ -842,13 +893,28 @@ export class ZoomMap {
   private drawDiffs(vb: View, s: number, path: Set<MapNode>) {
     const keep = new Set<number>()
     const k = this.textScale()
-    const opacity = smoothstep(DIFF_TEXT_FROM, DIFF_TEXT_FULL, k)
+    // Text first painted the frame it appears means every diff on screen painting at once: a stall right at the
+    // threshold, on every pass. So diffs are switched on a little below it, a couple per frame, at an opacity too
+    // low to see but not zero (fully transparent text isn't painted), and stay on until you zoom well back out.
+    if (k >= DIFF_WARM_FROM) this.textWarm = true
+    else if (k < DIFF_WARM_OFF) this.textWarm = false
+    const opacity = Math.max(0.01, smoothstep(DIFF_TEXT_FROM, DIFF_TEXT_FULL, k))
+    let revealed = 0
+    let pending = false
     for (const n of this.fileNodes) {
-      if (k < DIFF_TEXT_FROM) break
+      if (!this.textWarm) break
       const { w, h } = this.screenSize(n)
       if (w < DIFF_MIN_CHARS * CHAR_PX * k || h < 40 || !this.visible(n, vb)) continue
       const parent = n.parent
       if (parent && !this.isOpen(parent)) continue
+      if (!this.diffEls.get(n.file!)?.shown && k < DIFF_TEXT_FROM) {
+        // Warming up: a couple of new ones a frame, so the painting is spread out.
+        if (revealed >= DIFF_WARM_PER_FRAME) {
+          pending = true
+          continue
+        }
+        revealed++
+      }
       keep.add(n.file!)
       const d = this.diffFor(n)
       const sx = (n.x - vb.x) * s
@@ -870,23 +936,25 @@ export class ZoomMap {
       const visRight = selected ? Math.min(sx + w, this.camera.width) : sx + w
       if (visRight - visLeft < DIFF_MIN_CHARS * CHAR_PX * k) { keep.delete(n.file!); continue }
       const el = d.el
-      el.style.transform = `translate(${visLeft}px, ${visTop}px) scale(${k})`
-      el.style.width = `${(visRight - visLeft) / k}px`
-      el.style.height = `${(visBottom - visTop) / k}px`
-      el.scrollTop = d.hidden + d.offset
-      el.style.opacity = String(opacity)
-      el.classList.toggle('selected', this.selected === n)
+      setStyle(el, 'transform', `translate(${px(visLeft)}, ${px(visTop)}) scale(${k.toFixed(4)})`)
+      setStyle(el, 'width', px((visRight - visLeft) / k))
+      setStyle(el, 'height', px((visBottom - visTop) / k))
+      setScroll(el, d.hidden + d.offset)
+      setStyle(el, 'opacity', opacity.toFixed(2))
+      setClass(el, this.selected === n ? 'diff diffview selected' : 'diff diffview')
       if (!d.shown) {
-        el.style.visibility = ''
+        setStyle(el, 'visibility', '')
         d.shown = true
       }
     }
     // Hidden, not removed: showing it again is only a repaint, and it keeps its scroll and expanded gaps.
     for (const [i, d] of this.diffEls) {
       if (keep.has(i) || !d.shown) continue
-      d.el.style.visibility = 'hidden'
+      setStyle(d.el, 'visibility', 'hidden')
       d.shown = false
     }
+    // More to warm up: keep going next frame, even if the camera has stopped.
+    if (pending) this.schedule()
   }
 
   /** A file's diff element, built now if the pre-build hasn't reached it yet. */
@@ -895,7 +963,7 @@ export class ZoomMap {
     if (d) return d
     const el = document.createElement('div')
     el.className = 'diff'
-    el.style.visibility = 'hidden'
+    setStyle(el, 'visibility', 'hidden')
     // Laid out at the width it will have on screen (with the text scale below its cap), so showing it is a repaint.
     el.style.width = `${(n.w * DIFF_W) / this.medianFileW}px`
     el.style.height = `${(n.h * DIFF_W) / this.medianFileW}px`

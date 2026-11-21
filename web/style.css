@@ -95,6 +95,9 @@ main { flex: 1; display: flex; min-height: 0; }
   contain: layout paint style;
 }
 .diff::-webkit-scrollbar { display: none; }
+/* While the map moves (see noteMotion in map.ts), diffs are GPU layers: zooming scales a picture of the text instead
+   of re-rendering every line each frame. It may look a touch soft mid-zoom; it renders sharp again when you stop. */
+#map.moving .diffs .diff { will-change: transform; }
 /* The selected file's diff takes clicks (its expand buttons); the others let them through to the map. */
 .diff.selected { pointer-events: auto; }
 /* GitHub-style rows: old and new line numbers, a sign, then the code. Long lines wrap (no sideways scrolling),
