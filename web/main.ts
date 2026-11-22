@@ -1,4 +1,4 @@
-import type { Analysis, Finding } from '../shared/types.ts'
+import type { Analysis, ChangeSet, Finding, Review } from '../shared/types.ts'
 import { esc, ZoomMap, type Level } from './map.ts'
 import { renderDiffView } from './diffView.ts'
 import { roleOf, type MapNode } from './layout.ts'
@@ -9,6 +9,8 @@ const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as
 let analysis: Analysis
 let map: ZoomMap
 let activeFinding = -1
+/** How often the page looks for new commits and newly saved reviews while it's shown. */
+const LIVE_CHECK_MS = 4000
 
 const PANEL_KEY = 'semantic-zoom:panelWidth'
 const PANEL_DEFAULT = 400
@@ -272,33 +274,90 @@ async function route() {
   renderPanel()
 }
 
-/** Back in the window: the branch may have new commits (say, from a Claude Code session). Offer to update. */
-async function checkForNewCommits() {
-  if (!current || !analysis) return
-  const { repo, head } = current
+/**
+ * A review or descriptions saved since the panel was drawn (`semantic-zoom import`, from a Claude Code session): shown
+ * at once, without making the map again: your zoom and selection stay. Returns whether anything changed.
+ */
+async function showNewlySaved(): Promise<boolean> {
+  if (!current || !analysis) return false
+  const { repo, head, base } = current
+  let s: { changes: ChangeSet | null; review: Review | null }
   try {
-    await loadBranches(repo)
+    s = await api(`/api/saved?${new URLSearchParams({ repo: repo.id, head, base })}`)
   } catch {
-    return
+    return false
   }
-  renderBranchPicker()
-  const b = branchList?.branches.find((x) => x.name === head)
-  const el = document.querySelector<HTMLElement>('#newer')
-  if (!el || current?.head !== head) return
-  // A review or descriptions saved since (by `semantic-zoom import`, from a Claude Code session).
-  let saved = false
+  if (current?.head !== head || current.base !== base || current.repo.id !== repo.id) return false
+  const changesNew = (s.changes?.generatedAt ?? null) !== (analysis.changes?.generatedAt ?? null)
+  const reviewNew = (s.review?.generatedAt ?? null) !== (analysis.review?.generatedAt ?? null)
+  if (!changesNew && !reviewNew) return false
+  analysis.changes = s.changes ?? undefined
+  analysis.review = s.review ?? undefined
+  if (changesNew) map.setChanges(analysis.changes)
+  const panel = $('#panel-body')
+  const scroll = panel.scrollTop
+  renderPanel()
+  panel.scrollTop = scroll
+  if (map.selected) showSelection(map.selected)
+  flashNote(reviewNew && changesNew ? 'AI review and change descriptions updated' : reviewNew ? 'AI review updated' : 'Change descriptions updated')
+  return true
+}
+
+/** A passing note at the top of the panel (what just changed by itself). */
+function flashNote(text: string) {
+  const note = document.querySelector<HTMLElement>('#newer')
+  if (!note) return
+  note.textContent = text
+  note.hidden = false
+  setTimeout(() => {
+    if (note.isConnected && note.textContent === text) note.hidden = true
+  }, 4000)
+}
+
+let refreshing = false
+
+/**
+ * Keeps the view live: when the branch (or its base) has moved to another commit, the map is made again for it, without
+ * asking; otherwise any review saved meanwhile is shown. Runs every few seconds while the page is shown, and when the
+ * window comes forward.
+ */
+async function stayLive() {
+  if (!current || !analysis || refreshing) return
+  refreshing = true
   try {
-    const q = new URLSearchParams({ repo: repo.id, head, base: current.base })
-    const s = await api<{ changes: string | null; review: string | null }>(`/api/saved?${q}`)
-    saved = s.changes !== (analysis.changes?.generatedAt ?? null) || s.review !== (analysis.review?.generatedAt ?? null)
-  } catch {}
-  if (current?.head !== head) return
-  const moved = b && b.sha !== analysis.headSha
-  if (moved || saved) {
-    el.innerHTML = `${moved ? `New commits on ${esc(head)} since this map was made.` : 'A new AI review or change descriptions were saved for this branch.'} <button type="button">Update</button>`
-    el.hidden = false
-    el.querySelector('button')!.onclick = () => route()
-  } else el.hidden = true
+    const { repo, head, base } = current
+    const seq = routing
+    let at: { head: string | null; base: string | null }
+    try {
+      at = await api(`/api/commits?${new URLSearchParams({ repo: repo.id, head, base })}`)
+    } catch {
+      return
+    }
+    if (seq !== routing) return // another branch was opened meanwhile
+    // A branch deleted under us stays as it was: there's nothing newer to show.
+    if (at.head && at.base && (at.head !== analysis.headSha || at.base !== analysis.baseSha)) {
+      let a: Analysis
+      try {
+        a = await api<Analysis>(`/api/analysis?${new URLSearchParams({ repo: repo.id, head, base })}`)
+      } catch {
+        return
+      }
+      if (seq !== routing) return
+      const moved = a.headSha !== analysis.headSha
+      analysis = a
+      const panel = $('#panel-body')
+      const scroll = panel.scrollTop
+      map.load(analysis)
+      renderPanel()
+      panel.scrollTop = scroll
+      flashNote(moved ? `Updated to ${head}’s new commit ${a.headSha.slice(0, 7)}` : `Updated: ${base} moved to ${a.baseSha.slice(0, 7)}`)
+      void loadBranches(repo).then(renderBranchPicker, () => {})
+      return
+    }
+    await showNewlySaved()
+  } finally {
+    refreshing = false
+  }
 }
 
 // Uncaught errors go to the server's output too: in the desktop app there's no console to read them in.
@@ -328,7 +387,15 @@ async function main() {
   }
   const branchSel = $<HTMLSelectElement>('#branch')
   branchSel.onchange = () => current && go(current.repo.id, branchSel.value)
-  window.addEventListener('focus', () => checkForNewCommits())
+  // The view stays live: new commits and newly saved reviews show by themselves, whether the window is in front (the
+  // session running beside it) or comes back to the front.
+  window.addEventListener('focus', () => {
+    void stayLive()
+    if (current) void loadBranches(current.repo).then(renderBranchPicker, () => {})
+  })
+  setInterval(() => {
+    if (document.visibilityState === 'visible') void stayLive()
+  }, LIVE_CHECK_MS)
   if (tauri) {
     // The window's title bar is the header: room for the window buttons, and dragging it moves the window.
     document.documentElement.classList.add('tauri')

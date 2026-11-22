@@ -242,8 +242,8 @@ ol.changes-list { list-style: none; margin: 0; padding: 0; }
 /* The panel's messages while there's no map (no repos, analyzing, errors). */
 #panel-body .empty h2 { margin-top: 0; }
 #panel-body .error { color: #b03a46; white-space: pre-wrap; }
-.add-repo, .newer button { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 5px; border: 1px solid #c9c2b2; background: #fbfaf6; color: var(--ink); cursor: pointer; }
-.add-repo:hover, .newer button:hover { background: #f1ede3; }
+.add-repo { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 5px; border: 1px solid #c9c2b2; background: #fbfaf6; color: var(--ink); cursor: pointer; }
+.add-repo:hover { background: #f1ede3; }
 /* The branch moved on since the map was made (checked when the window regains focus). */
 .newer { margin: 6px 0; padding: 6px 8px; border-radius: 5px; background: #fdf3dc; font-size: 12px; display: flex; gap: 8px; align-items: center; justify-content: space-between; }
 .newer[hidden] { display: none; }

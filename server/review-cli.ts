@@ -5,14 +5,14 @@
 //   point at. The head defaults to the folder's checked-out branch, the base to the repo's default branch.
 // semantic-zoom import <file.json> [folder]
 //   Checks that file against the code (hunk ids, coverage, paths, the head commit) and saves it where the app looks
-//   (~/.semantic-zoom, server/api.ts). The app shows it the next time its window comes forward.
+//   (~/.semantic-zoom, server/api.ts). The app shows it within a few seconds (web/main.ts, showNewlySaved).
 //
 // Run through bin/semantic-zoom.mjs, which hands these two commands to tsx.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
-import { branchSummary, checkChanges, describable, renderDiff, SYSTEM } from '../analyzer/describe.ts'
+import { branchSummary, CHANGE_RULES, checkChanges, describable, renderDiff } from '../analyzer/describe.ts'
 import { addRepo, analysisFor, defaultBase, saveDescriptions, saveReview } from './api.ts'
 import type { Analysis, Finding, Review, Severity } from '../shared/types.ts'
 
@@ -92,13 +92,15 @@ function exportInput() {
     '',
     '## changes: what the branch does',
     '',
-    'Follow these rules:',
-    '',
-    SYSTEM,
+    CHANGE_RULES,
     '',
     '## findings: your review',
     '',
-    'Bugs and risks you found in the branch, most important first. Each one is shown in the app\'s panel under "AI review", apart from the analyzer\'s architecture findings, and clicking it flies the map to its paths.',
+    'Bugs and risks you found in the branch, most important first. Each one shows in the app\'s panel under "AI review", apart from the analyzer\'s architecture findings, and clicking it flies the map to its paths.',
+    '',
+    'Review the branch for real: read beyond the diff where it matters (callers of changed functions, the tests, the code a change relies on). Look for wrong behaviour, missed cases, crashes, races, lost data, security holes and broken contracts with callers. Every finding needs evidence from the code. Don\'t invent findings to fill the list: an empty list is a fine answer.',
+    '',
+    'For each finding:',
     '',
     '- severity: "violation" for a bug (wrong behaviour, a crash, lost data, a security hole), "warning" for something to check (risky, unclear, untested), "info" for a note.',
     '- title: the problem in at most 10 words.',
@@ -186,7 +188,7 @@ function importReview() {
     const bad = file.findings.filter((f) => !SEVERITIES.includes(f.severity)).length
     if (bad) console.log(`  ${bad} findings had no valid severity and were saved as notes`)
   }
-  console.log(`Saved for ${file.head} against ${file.base}. The app shows it when its window next comes forward.`)
+  console.log(`Saved for ${file.head} against ${file.base}. The app shows it within a few seconds, without moving the map.`)
 }
 
 const command = args.shift()

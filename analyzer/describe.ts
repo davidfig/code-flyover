@@ -9,17 +9,15 @@
 
 import type { Analysis, Change, ChangeSet, FileInfo } from '../shared/types.ts'
 
-/** The grouping rules, as `semantic-zoom export` gives them to the AI that writes the descriptions. */
-export const SYSTEM = `You help a code reviewer see what a branch does before they read its diff.
+/** How to write the change descriptions: the rules `semantic-zoom export` gives the AI that writes them. */
+export const CHANGE_RULES = `The changes say what the branch does, so the reviewer knows what they're looking at before reading the code. Each one shows as a numbered card over its files on the zoomed-out map, and in the panel under "What changed".
 
-You get the branch's commit messages and its source diff, split into hunks. Each hunk has an id like "path/to/file.ts#3".
-
-Group the hunks into the distinct changes the branch makes: usually 3 to 8. A change is one thing the branch does (a feature, a fix, a refactor, a new endpoint), and it often spans several files and modules. Put every hunk id in exactly one change. If some hunks are small incidental edits that fit nowhere, collect them in one change titled "Small edits" and say what they are.
+Group the hunks below into the distinct things the branch does: usually 3 to 8. A change is one thing (a feature, a fix, a refactor, a new endpoint), and it often spans several files and modules. Put every hunk id in exactly one change: a hunk left out shows as "Not described", for the reviewer to read unaided. Small incidental edits that fit nowhere go in one change titled "Small edits", which says what they are.
 
 For each change:
 - title: what it does, in plain words, at most 8 words, starting with a verb ("Adds shared-folder routes to the Worker").
-- summary: one or two sentences on what changed in behaviour or structure, naming the main files or functions. Say only what the diff shows. Don't judge quality, don't say whether it fits the architecture, and don't guess at intent the diff doesn't show.
-- hunks: the ids of its hunks, copied exactly.
+- summary: one or two sentences on what changed in behaviour or structure, naming the main files or functions. Describe only: no judgement of quality, nothing on whether it fits the architecture (findings are for that), and no guessing at intent the code doesn't show.
+- hunks: the ids of its hunks, copied exactly from the diff below ("path/to/file.ts#3").
 
 Order the changes from most to least significant.`
 

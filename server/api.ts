@@ -7,7 +7,8 @@
 // DELETE /api/repos?repo=<id>                         forget one (nothing in the repo is touched)
 // GET    /api/branches?repo=<id>                      its local branches, newest first, and the default base
 // GET    /api/analysis?repo=<id>&head=<ref>&base=<ref> the analysis (made now, or from memory), with saved descriptions and review
-// GET    /api/saved?repo=<id>&head=<ref>&base=<ref>    when its descriptions and review were saved (the page checks on focus)
+// GET    /api/saved?repo=<id>&head=<ref>&base=<ref>    its saved descriptions and review alone (the page checks for new ones)
+// GET    /api/commits?repo=<id>&head=<ref>&base=<ref>  the commits head and base are at now (the page checks for new ones)
 // POST   /api/log        { message }                  the page's uncaught errors, printed to the server's output
 //
 // State lives in ~/.semantic-zoom: repos.json, descriptions/<repo id>/<head>..<base>.json and reviews/<repo id>/<head>..<base>.json
@@ -250,11 +251,16 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const repo = repoById(q.get('repo'))
       return send(200, analysisFor(repo, need(q.get('head'), 'head'), need(q.get('base') ?? defaultBase(repo.path), 'base')))
     }
+    if (route === 'GET /commits') {
+      const repo = repoById(q.get('repo'))
+      const at = (ref: string) => tryGit(repo.path, ['rev-parse', '--verify', '--quiet', ref + '^{commit}'])
+      return send(200, { head: at(need(q.get('head'), 'head')), base: at(need(q.get('base') ?? defaultBase(repo.path), 'base')) })
+    }
     if (route === 'GET /saved') {
       const repo = repoById(q.get('repo'))
       const head = need(q.get('head'), 'head')
       const base = need(q.get('base') ?? defaultBase(repo.path), 'base')
-      return send(200, { changes: savedDescriptions(repo, head, base)?.generatedAt ?? null, review: savedReview(repo, head, base)?.generatedAt ?? null })
+      return send(200, { changes: savedDescriptions(repo, head, base) ?? null, review: savedReview(repo, head, base) ?? null })
     }
     send(404, { error: `No such API: ${route}` })
   } catch (e) {
