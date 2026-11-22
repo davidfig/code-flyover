@@ -2,10 +2,27 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "semantic-zoom",
+      "name": "code-flyover",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5196", "--strictPort"],
+      "runtimeArgs": [
+        "vite",
+        "--port",
+        "5196",
+        "--strictPort"
+      ],
       "port": 5196
+    },
+    {
+      "name": "site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "5198",
+        "--directory",
+        "site"
+      ],
+      "port": 5198
     }
   ]
 }

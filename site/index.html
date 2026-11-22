@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Code Flyover — code review on a map</title>
+<meta name="description" content="See what a branch does and where it lands in your architecture from 1000 feet, then zoom through module, folder, file and diff. Runs on your machine; never sends code anywhere.">
+<meta property="og:title" content="Code Flyover — code review on a map">
+<meta property="og:description" content="See what a branch does and where it lands in your architecture, then zoom into the diff.">
+<meta property="og:url" content="https://codeflyover.app">
+<link rel="icon" href="icon.png">
+<style>
+:root{
+  --bg:#f3f0e8; --panel:#fbfaf6; --ink:#2b2a27; --muted:#6f6a5d; --line:#ddd7ca;
+  --modified:#e8a33d; --added:#3f9e64; --deleted:#c8414f; --impacted:#9fc3e3;
+  --removed:#7a6fb0; --select:#1f6feb; --teal:#2a8f8f; --code-bg:#2b2a27; --code-ink:#f3f0e8;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#1c1b19; --panel:#252420; --ink:#ece8dc; --muted:#a39e90; --line:#3a3832;
+    --impacted:#4a6f90; --code-bg:#12110f; --code-ink:#ece8dc;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--select)}
+.wrap{max-width:1080px;margin:0 auto;padding:0 16px}
+nav{display:flex;align-items:center;gap:20px;padding:18px 0}
+nav .brand{display:flex;align-items:center;gap:10px;font-weight:650;color:var(--ink);text-decoration:none;margin-right:auto}
+nav .brand img{width:28px;height:28px;border-radius:7px}
+nav a.l{color:var(--muted);text-decoration:none;font-size:15px}
+nav a.l:hover{color:var(--ink)}
+.hero{padding:56px 0 24px;text-align:center}
+h1{font-size:clamp(34px,6vw,60px);line-height:1.08;letter-spacing:-.025em;margin:0 auto 20px;max-width:16ch;font-weight:700}
+.lead{font-size:clamp(18px,2.4vw,21px);color:var(--muted);max-width:44em;margin:0 auto 30px}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-block;padding:11px 20px;border-radius:9px;font-weight:600;text-decoration:none;font-size:16px;border:1px solid var(--line)}
+.btn.p{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.btn.s{background:var(--panel);color:var(--ink)}
+.fine{font-size:14px;color:var(--muted);margin-top:14px}
+.map{margin:44px auto 0;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 18px 50px -24px rgba(0,0,0,.35)}
+.map .bar{display:flex;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line);align-items:center;font:13px var(--mono);color:var(--muted)}
+.map .bar i{width:11px;height:11px;border-radius:50%;background:var(--line)}
+.map .bar span{margin-left:10px}
+.map svg{display:block;width:100%;height:auto}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;justify-content:center;padding:12px 16px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+.legend b{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+section{padding:72px 0}
+section h2{font-size:clamp(26px,4vw,36px);line-height:1.15;letter-spacing:-.02em;margin:0 0 14px}
+section .sub{color:var(--muted);max-width:42em;margin:0 0 36px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
+.card h3{margin:0 0 8px;font-size:18px}
+.card p{margin:0;color:var(--muted);font-size:16px}
+.card .dot{display:inline-block;width:12px;height:12px;border-radius:3px;margin-bottom:12px}
+.steps{counter-reset:s;display:grid;gap:14px;padding:0;list-style:none;margin:0}
+.steps li{counter-increment:s;display:flex;gap:16px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.steps li::before{content:counter(s);flex:none;width:30px;height:30px;border-radius:50%;background:var(--modified);color:#2b2a27;font-weight:700;display:grid;place-items:center}
+.steps strong{display:block}
+.steps span{color:var(--muted);font-size:16px}
+pre{background:var(--code-bg);color:var(--code-ink);border-radius:12px;padding:18px 20px;overflow-x:auto;font:14.5px/1.65 var(--mono);margin:0}
+pre .c{color:#8d887a}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center}
+.checks{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.checks li{padding-left:26px;position:relative;font-size:16px}
+.checks li::before{content:"";position:absolute;left:0;top:.55em;width:12px;height:3px;background:var(--teal);border-radius:2px}
+.checks em{font-style:normal;color:var(--muted)}
+.dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
+.dl .card.me{border-color:var(--ink)}
+.dl .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.dl .btn{padding:8px 14px;font-size:14.5px}
+.dl h3 small{font-weight:400;color:var(--muted);font-size:14px}
+footer{border-top:1px solid var(--line);padding:32px 0 48px;color:var(--muted);font-size:14px;display:flex;flex-wrap:wrap;gap:12px 24px}
+footer a{color:var(--muted)}
+footer .r{margin-left:auto}
+@media(max-width:760px){.two{grid-template-columns:1fr;gap:24px}nav a.l.hide{display:none}section{padding:52px 0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="/"><img src="icon.png" alt="">Code Flyover</a>
+    <a class="l hide" href="#how">How it works</a>
+    <a class="l hide" href="#download">Download</a>
+    <a class="l hide" href="#checks">Checks</a>
+    <a class="l hide" href="#ai">AI review</a>
+    <a class="l" href="https://github.com/davidfig/code-flyover">GitHub</a>
+  </nav>
+
+  <header class="hero">
+    <h1>Code review on a map.</h1>
+    <p class="lead">See what a branch does and where it lands in your architecture from 1000 feet, then zoom through module → folder → file → diff without leaving the picture.</p>
+    <div class="cta">
+      <a class="btn p" href="#download">Download</a>
+      <a class="btn s" href="https://github.com/davidfig/code-flyover">View on GitHub</a>
+    </div>
+    <p class="fine">Free and open source (MIT) · apps for macOS, Windows and Linux, or any browser · everything stays on your machine</p>
+
+    <div class="map" role="img" aria-label="Illustration of the map: modules containing changed files, numbered change cards, and a forbidden import drawn as a red arrow">
+      <div class="bar"><i></i><i></i><i></i><span>feature/offline-sync ← origin/main</span></div>
+      <svg viewBox="0 0 960 440" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#c8414f"/></marker>
+          <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#3f9e64"/></marker>
+        </defs>
+        <g fill="none" stroke="var(--line)" stroke-width="1.5">
+          <rect x="16" y="16" width="400" height="408" rx="10"/><rect x="432" y="16" width="270" height="250" rx="10"/><rect x="718" y="16" width="226" height="408" rx="10"/><rect x="432" y="282" width="270" height="142" rx="10"/>
+        </g>
+        <g font-size="12" fill="var(--muted)"><text x="28" y="38">api</text><text x="444" y="38">core</text><text x="730" y="38">web</text><text x="444" y="304">storage</text></g>
+        <!-- files -->
+        <g stroke-width="1.5">
+          <rect x="30" y="52" width="180" height="150" rx="6" fill="#e8a33d" fill-opacity=".28" stroke="#e8a33d"/>
+          <rect x="222" y="52" width="180" height="96" rx="6" fill="#3f9e64" fill-opacity=".26" stroke="#3f9e64"/>
+          <rect x="222" y="160" width="180" height="42" rx="6" fill="#9fc3e3" fill-opacity=".3" stroke="#9fc3e3"/>
+          <rect x="30" y="216" width="372" height="196" rx="6" fill="#e8a33d" fill-opacity=".2" stroke="#e8a33d"/>
+          <rect x="446" y="50" width="244" height="104" rx="6" fill="#e8a33d" fill-opacity=".28" stroke="#e8a33d"/>
+          <rect x="446" y="166" width="118" height="84" rx="6" fill="#c8414f" fill-opacity=".22" stroke="#c8414f"/>
+          <rect x="574" y="166" width="116" height="84" rx="6" fill="#9fc3e3" fill-opacity=".3" stroke="#9fc3e3"/>
+          <rect x="446" y="318" width="244" height="92" rx="6" fill="#3f9e64" fill-opacity=".26" stroke="#3f9e64"/>
+          <rect x="732" y="52" width="198" height="190" rx="6" fill="#e8a33d" fill-opacity=".28" stroke="#e8a33d"/>
+          <rect x="732" y="254" width="198" height="158" rx="6" fill="#e8a33d" fill-opacity=".2" stroke="#e8a33d"/>
+        </g>
+        <!-- fake diff text -->
+        <g font-size="10.5" fill="var(--ink)" fill-opacity=".55">
+          <text x="40" y="74">export async function sync(</text><text x="40" y="89">  queue: Queue,</text><text x="40" y="104" fill="#3f9e64" fill-opacity="1">+ opts: SyncOptions,</text><text x="40" y="119">) {</text><text x="40" y="134" fill="#3f9e64" fill-opacity="1">+ if (!navigator.onLine) return</text>
+          <text x="232" y="74" fill="#3f9e64" fill-opacity="1">+ export class OfflineQueue {</text><text x="232" y="89" fill="#3f9e64" fill-opacity="1">+   private items = []</text><text x="232" y="104" fill="#3f9e64" fill-opacity="1">+   push(op: Op) {</text>
+          <text x="456" y="72">function merge(a, b) {</text><text x="456" y="87" fill="#c8414f" fill-opacity="1">- return { ...a, ...b }</text><text x="456" y="102" fill="#3f9e64" fill-opacity="1">+ return resolve(a, b)</text>
+          <text x="742" y="74">render(state) {</text><text x="742" y="89" fill="#3f9e64" fill-opacity="1">+ banner(state.offline)</text>
+        </g>
+        <!-- labels -->
+        <g font-size="11" fill="var(--ink)" fill-opacity=".75">
+          <text x="38" y="196">routes.ts</text><text x="230" y="142">queue.ts</text><text x="230" y="195">index.ts</text><text x="38" y="406">handlers/</text>
+          <text x="454" y="148">merge.ts</text><text x="454" y="244">db.ts</text><text x="582" y="244">types.ts</text><text x="454" y="404">sqlite.ts</text><text x="740" y="236">App.ts</text><text x="740" y="406">banner.ts</text>
+        </g>
+        <!-- arrows -->
+        <path d="M454 210 C 330 250, 300 330, 250 380" fill="none" stroke="#c8414f" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#ah)"/>
+        <path d="M232 100 C 300 100, 380 90, 446 100" fill="none" stroke="#3f9e64" stroke-width="2" marker-end="url(#ag)"/>
+        <text x="266" y="338" font-size="11" fill="#c8414f" font-weight="700" transform="rotate(-48 266 338)">core → api  ✕</text>
+        <!-- cards -->
+        <g font-family="-apple-system,Segoe UI,sans-serif">
+          <g transform="translate(70,120)"><rect width="178" height="54" rx="9" fill="var(--panel)" stroke="var(--ink)" stroke-opacity=".5"/><circle cx="19" cy="19" r="10" fill="var(--select)"/><text x="19" y="23" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">1</text><text x="38" y="23" font-size="13" font-weight="650" fill="var(--ink)">Queue writes offline</text><text x="12" y="43" font-size="11" fill="var(--muted)">Syncs when back online</text></g>
+          <g transform="translate(486,64)"><rect width="178" height="54" rx="9" fill="var(--panel)" stroke="var(--ink)" stroke-opacity=".5"/><circle cx="19" cy="19" r="10" fill="var(--select)"/><text x="19" y="23" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">2</text><text x="38" y="23" font-size="13" font-weight="650" fill="var(--ink)">Resolve conflicts</text><text x="12" y="43" font-size="11" fill="var(--muted)">Last-writer wins → merge</text></g>
+          <g transform="translate(752,120)"><rect width="168" height="54" rx="9" fill="var(--panel)" stroke="var(--ink)" stroke-opacity=".5"/><circle cx="19" cy="19" r="10" fill="var(--select)"/><text x="19" y="23" font-size="12" fill="#fff" text-anchor="middle" font-weight="700">3</text><text x="38" y="23" font-size="13" font-weight="650" fill="var(--ink)">Offline banner</text><text x="12" y="43" font-size="11" fill="var(--muted)">Shown while disconnected</text></g>
+        </g>
+      </svg>
+      <div class="legend">
+        <span><b style="background:#e8a33d"></b>modified</span><span><b style="background:#3f9e64"></b>new</span><span><b style="background:#c8414f"></b>deleted</span><span><b style="background:#9fc3e3"></b>imports a changed file</span><span><b style="background:none;border-top:3px dashed #c8414f;height:0;width:16px;border-radius:0"></b>breaks the model</span>
+      </div>
+    </div>
+  </header>
+
+  <section id="how">
+    <h2>A map, not a list of files</h2>
+    <p class="sub">Most review tools hand you an alphabetical list. Code Flyover lays the branch's changes over the shape of your repo, so you see what it did and whether it belongs there.</p>
+    <div class="grid">
+      <div class="card"><span class="dot" style="background:var(--modified)"></span><h3>What changed, pinned to the code</h3><p>The branch's hunks are grouped into a handful of described changes, shown as numbered cards over the files they touch. Anything no description covers is flagged for you to read yourself.</p></div>
+      <div class="card"><span class="dot" style="background:var(--removed)"></span><h3>Where it lands</h3><p>New, removed and forbidden dependencies between modules, new cycles and packages, likely duplicates, and changed files with many importers. All checked from the code, not written by a model.</p></div>
+      <div class="card"><span class="dot" style="background:var(--added)"></span><h3>The diff itself</h3><p>Zoom in and every box becomes its diff, drawn on the GPU, so even a huge branch stays smooth at any zoom level.</p></div>
+    </div>
+  </section>
+
+  <section style="padding-top:0">
+    <h2>Fly around</h2>
+    <ol class="steps">
+      <li><div><strong>Pick a branch</strong><span>Its map is built on the spot, usually in about a second, compared with the remote's default branch or any base you choose.</span></div></li>
+      <li><div><strong>Hover and click a change card</strong><span>Hover outlines its files; click zooms there. Double-click any box to read it full width.</span></div></li>
+      <li><div><strong>Zoom from architecture to diff</strong><span>Module, folder, file, hunk. Breadcrumbs always say where you are, and Whole map resets the view.</span></div></li>
+      <li><div><strong>Keep it live</strong><span>Uncommitted work in a worktree is included, and the map rebuilds within seconds when the branch or its base moves.</span></div></li>
+    </ol>
+  </section>
+
+  <section id="checks">
+    <div class="two">
+      <div>
+        <h2>Checked against the architecture you intend</h2>
+        <p class="sub" style="margin-bottom:0">Describe your modules and who may import whom in a small <code>.code-flyover.json</code>, or let Code Flyover infer them from the base branch. It's read from the base commit, so a branch can't loosen the rules it's judged by.</p>
+      </div>
+      <ul class="checks">
+        <li><strong>Forbidden dependencies</strong> <em>between modules</em></li>
+        <li><strong>New cycles</strong> <em>between modules and folders</em></li>
+        <li><strong>New third-party packages</strong> <em>and manifest changes</em></li>
+        <li><strong>Possible duplicates</strong> <em>of exports already in the module</em></li>
+        <li><strong>High reach</strong> <em>changed files with many importers</em></li>
+        <li><strong>Untested change</strong> <em>source changes with no tests</em></li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="ai" style="padding-top:0">
+    <div class="two">
+      <div>
+        <h2>Bring your own AI reviewer</h2>
+        <p class="sub">The app never calls a model and needs no API key. An agent you run, such as Claude Code, writes the change descriptions and bug findings, and hands them over with two commands. The map labels them as AI-written so they never pass for the analyzer's own checks.</p>
+      </div>
+<pre><span class="c"># in Claude Code, inside the repo</span>
+/flyover-review
+
+<span class="c"># or with any agent that runs shell</span>
+flyover export &gt; input.md
+flyover import review.json</pre>
+    </div>
+  </section>
+
+  <section id="download" style="padding-top:0">
+    <h2>Download</h2>
+    <p class="sub">The desktop app, built for macOS, Windows and Linux. It needs <a href="https://nodejs.org">Node.js</a> 20.19+ and git on your machine. Builds aren't code-signed yet, so your OS may ask you to confirm the first launch.</p>
+    <div class="dl" id="dl">
+      <div class="card" data-os="mac"><h3>macOS</h3><p>Apple silicon and Intel.</p><div class="btns"><a class="btn s" data-kind="mac-arm" href="https://github.com/davidfig/code-flyover/releases/latest">Apple silicon .dmg</a><a class="btn s" data-kind="mac-intel" href="https://github.com/davidfig/code-flyover/releases/latest">Intel .dmg</a></div></div>
+      <div class="card" data-os="win"><h3>Windows</h3><p>Windows 10 and 11, 64-bit.</p><div class="btns"><a class="btn s" data-kind="win" href="https://github.com/davidfig/code-flyover/releases/latest">Installer .exe</a></div></div>
+      <div class="card" data-os="linux"><h3>Linux</h3><p>64-bit. Pick the package that suits your distro.</p><div class="btns"><a class="btn s" data-kind="appimage" href="https://github.com/davidfig/code-flyover/releases/latest">AppImage</a><a class="btn s" data-kind="deb" href="https://github.com/davidfig/code-flyover/releases/latest">.deb</a></div></div>
+    </div>
+    <p class="fine" id="dlnote">All releases and notes are on <a href="https://github.com/davidfig/code-flyover/releases">GitHub</a>. Prefer the terminal? <a href="#install">Run it from source</a>.</p>
+  </section>
+
+  <section id="install" style="padding-top:0">
+    <h2>Try it on a repo</h2>
+    <p class="sub">Needs Node.js 20.19+ and git. The desktop apps are built with Tauri (the Windows and Linux ones are new, so expect rough edges); the browser version works wherever Node does.</p>
+<pre>git clone https://github.com/davidfig/code-flyover.git
+cd code-flyover &amp;&amp; npm install &amp;&amp; npm link
+
+<span class="c"># then, in any git repo</span>
+flyover</pre>
+  </section>
+
+  <section style="padding-top:0">
+    <div class="card" style="text-align:center;padding:40px 24px">
+      <h2 style="margin-bottom:10px">Your code never leaves your machine</h2>
+      <p style="max-width:40em;margin:0 auto">Repos are only ever read through git. Uncommitted changes are read through a temporary index of the app's own, so your folder, index and branches are never touched. State lives in <code>~/.code-flyover/</code>.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span>© 2026 David Figatner · MIT licensed</span>
+    <a href="https://github.com/davidfig/code-flyover">GitHub</a>
+    <a href="https://github.com/davidfig/code-flyover/blob/main/docs/design.md">How it works</a>
+    <span class="r">codeflyover.app</span>
+  </footer>
+</div>
+<script>
+// Point each download button at the latest release's file, and highlight the visitor's system.
+(function(){
+  var ua=navigator.userAgent, os=/Win/.test(ua)?"win":/Mac/.test(ua)?"mac":/Linux|X11/.test(ua)&&!/Android/.test(ua)?"linux":"";
+  var mine=document.querySelector('[data-os="'+os+'"]'); if(mine) mine.classList.add("me");
+  var rules={
+    "mac-arm":function(n){return /\.dmg$/i.test(n)&&/aarch64|arm64/i.test(n)},
+    "mac-intel":function(n){return /\.dmg$/i.test(n)&&/x86_64|x64|intel/i.test(n)},
+    "win":function(n){return /\.exe$/i.test(n)},
+    "appimage":function(n){return /\.appimage$/i.test(n)},
+    "deb":function(n){return /\.deb$/i.test(n)}
+  };
+  fetch("https://api.github.com/repos/davidfig/code-flyover/releases/latest",{headers:{Accept:"application/vnd.github+json"}})
+    .then(function(r){return r.ok?r.json():Promise.reject()})
+    .then(function(rel){
+      document.querySelectorAll("#dl [data-kind]").forEach(function(a){
+        var hit=(rel.assets||[]).filter(function(x){return rules[a.dataset.kind](x.name)})[0];
+        if(hit) a.href=hit.browser_download_url;
+      });
+      var n=document.getElementById("dlnote");
+      n.insertAdjacentText("afterbegin","Latest: "+rel.tag_name+". ");
+    }).catch(function(){});
+})();
+</script>
+</body>
+</html>

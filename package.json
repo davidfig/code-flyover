@@ -1,24 +1,27 @@
 {
-  "name": "semantic-zoom",
+  "name": "code-flyover",
   "version": "1.0.0",
-  "description": "Semantic zoom for code review: see where a change lands in the architecture, then zoom in.",
+  "description": "Code review on a map: see where a change lands in the architecture, then zoom in.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "analyze": "tsx analyzer/cli.ts",
-    "app": "node bin/semantic-zoom.mjs"
+    "app": "node bin/flyover.mjs",
+    "deploy:site": "cf deploy ./site"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "repository": "github:davidfig/code-flyover",
   "type": "module",
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "cf": "^1.0.0-rc.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vite": "^7.3.8"
   },
   "private": true,
   "bin": {
-    "semantic-zoom": "bin/semantic-zoom.mjs"
+    "flyover": "bin/flyover.mjs"
   }
 }
