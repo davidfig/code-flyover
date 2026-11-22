@@ -13,8 +13,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { branchSummary, CHANGE_RULES, checkChanges, describable, renderDiff } from '../analyzer/describe.ts'
-import { addRepo, analysisFor, defaultBase, saveDescriptions, saveReview } from './api.ts'
-import type { Analysis, Finding, Review, Severity } from '../shared/types.ts'
+import { readFiles } from '../analyzer/git.ts'
+import { addRepo, analysisFor, defaultBase, loadReview, saveDescriptions, saveReview } from './api.ts'
+import type { Analysis, FileNote, Finding, Review, Severity } from '../shared/types.ts'
 
 /** What the AI writes (and `import` reads). */
 interface ReviewFile {
@@ -24,7 +25,73 @@ interface ReviewFile {
   headSha: string
   changes?: { title: string; summary: string; hunks: string[] }[]
   findings?: { severity: Severity; title: string; detail?: string; evidence?: string[]; paths?: string[] }[]
+  files?: { path: string; about: string; change: string }[]
+  folders?: { path: string; about: string }[]
 }
+
+/** The changed files to describe: source and tests (translations and generated files say nothing worth a tooltip). */
+const toDescribe = (a: Analysis) => a.files.filter((f) => f.status !== 'unchanged' && (f.role === 'source' || f.role === 'test'))
+
+/**
+ * The folders to describe: every folder above a changed file, less a module's own folder when the architecture model
+ * already describes that module (the map shows the model's words there).
+ */
+function foldersToDescribe(a: Analysis): string[] {
+  const described = new Set(a.model.modules.filter((m) => m.description).flatMap((m) => m.paths.map((p) => p.replace(/\/$/, ''))))
+  const out = new Set<string>()
+  for (const f of toDescribe(a)) {
+    const parts = f.path.split('/')
+    for (let i = 1; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join('/')
+      if (!described.has(dir)) out.add(dir)
+    }
+  }
+  return [...out].sort()
+}
+
+/** A file's opening comment, as one line: what the file says it is for (licence lines left out), or ''. */
+function headerOf(text: string): string {
+  const lines: string[] = []
+  for (const raw of text.split('\n').slice(0, 30)) {
+    const line = raw.trim()
+    if (!line) {
+      if (lines.length) break
+      continue
+    }
+    const m = /^(?:\/\/[/!]?|\/\*+|\*\/?|#!?)\s?(.*)$/.exec(line)
+    if (!m) break
+    const body = m[1].replace(/\*\/$/, '').trim()
+    if (/SPDX-License|copyright|^eslint|^@ts-|^prettier/i.test(body) || line.startsWith('#!')) continue
+    if (body) lines.push(body)
+    if (lines.join(' ').length > 320) break
+  }
+  const joined = lines.join(' ')
+  return joined.length > 320 ? joined.slice(0, 317) + '…' : joined
+}
+
+/** For each folder to describe: its subfolders, and its files with their opening comments (what the AI writes from). */
+function folderEvidence(a: Analysis, repoPath: string): string[] {
+  const folders = foldersToDescribe(a)
+  const paths = a.files.map((f) => f.path)
+  const inFolder = (dir: string) => paths.filter((p) => p.startsWith(dir + '/') && !p.slice(dir.length + 1).includes('/'))
+  const subfolders = (dir: string) => [...new Set(paths.filter((p) => p.startsWith(dir + '/') && p.slice(dir.length + 1).includes('/')).map((p) => p.slice(dir.length + 1).split('/')[0]))].sort()
+  const texts = readFiles(repoPath, a.headSha, [...new Set(folders.flatMap(inFolder))])
+  const out: string[] = []
+  for (const dir of folders) {
+    out.push(`### ${dir}`)
+    const subs = subfolders(dir)
+    if (subs.length) out.push(`Folders: ${subs.join(', ')}`)
+    const files = inFolder(dir)
+    for (const p of files.slice(0, 40)) {
+      const head = headerOf(texts.get(p) ?? '')
+      out.push(`- ${p.slice(dir.length + 1)}${head ? `: ${head}` : ''}`)
+    }
+    if (files.length > 40) out.push(`- and ${files.length - 40} more files`)
+    out.push('')
+  }
+  return out
+}
+
 
 const SEVERITIES: Severity[] = ['violation', 'warning', 'info']
 
@@ -75,11 +142,15 @@ function exportInput() {
     headSha: a.headSha,
     changes: [{ title: 'Adds …', summary: '…', hunks: [describable(a)[0]?.hunks?.length ? `${describable(a)[0].path}#1` : 'path/to/file.ts#1'] }],
     findings: [{ severity: 'warning', title: '…', detail: '…', evidence: ['path/to/file.ts:42  the line in question'], paths: ['path/to/file.ts'] }],
+    files: [{ path: toDescribe(a)[0]?.path ?? 'path/to/file.ts', about: '…', change: '…' }],
+    folders: [{ path: foldersToDescribe(a)[0] ?? 'path/to', about: '…' }],
   }
   const out = [
     `# Semantic Zoom: review input for ${a.repo}, ${head} against ${base}`,
     '',
-    `Head commit ${a.headSha}. Write one JSON file, then run \`semantic-zoom import <file>\` in the repo (or pass the repo's folder after the file).`,
+    a.uncommitted
+      ? `This includes the uncommitted changes in ${a.uncommitted}, as a snapshot of its files (headSha ${a.headSha}; no branch points at it). If those files change before you import, the import says so: export again. Write one JSON file, then run \`semantic-zoom import <file>\` in the repo (or pass the repo's folder after the file).`
+      : `Head commit ${a.headSha}. Write one JSON file, then run \`semantic-zoom import <file>\` in the repo (or pass the repo's folder after the file).`,
     'The import checks the file against this commit and tells you what it dropped; fix the file and import again until it reports nothing dropped.',
     '',
     '## The file to write',
@@ -88,7 +159,7 @@ function exportInput() {
     JSON.stringify(template, null, 2),
     '```',
     '',
-    'Copy head, base and headSha exactly. Both `changes` and `findings` are optional: leave one out to keep what the app has.',
+    'Copy head, base and headSha exactly. `changes`, `findings`, `files` and `folders` are each optional: leave one out to keep what the app has.',
     '',
     '## changes: what the branch does',
     '',
@@ -109,6 +180,22 @@ function exportInput() {
     '- paths: the files (or folders) to look at, from the list below. Paths not on the map are dropped from the target.',
     '- Leave out style preferences and anything the analyzer already reports (below).',
     '',
+    '## files: what each changed file is, and what the branch did to it',
+    '',
+    'Two lines for each changed file listed here, shown in a tooltip when the reviewer hovers over the file\'s name on the map. Write them from your reading of the file, not from its name alone.',
+    '',
+    '- about: what the file is for in the codebase, in one sentence, as it is now: its job, not its contents in full ("Syncs the local library with the account\'s cloud copies"). The same on any branch.',
+    '- change: what this branch did to it, in one sentence ("Adds encrypted folders: keys are fetched before a folder\'s documents sync"). For a new file, what it adds; for a deleted one, what went with it. Describe only, as in changes.',
+    '',
+    ...toDescribe(a).map((f) => `- ${f.path}`),
+    '',
+    '## folders: what each folder holds',
+    '',
+    'One sentence for each folder below, shown in a tooltip when the reviewer hovers over the folder\'s name on the map: what is kept in it, as it is now ("The search index: the worker that builds it, and querying it"). Not what the branch changed: the files and changes say that.',
+    '',
+    'Write it from the evidence listed under each folder (its subfolders, and each file with the comment it opens with), and from files you read. Where that evidence is too thin to say what the folder holds, leave the folder out rather than guess from its name.',
+    '',
+    ...folderEvidence(a, repo.path),
     '## The analyzer\'s own findings (don\'t repeat them)',
     '',
     ...(a.findings.length ? a.findings.map((f) => `- [${f.severity}] ${f.title}${f.detail ? `: ${f.detail}` : ''}`) : ['- none']),
@@ -147,11 +234,11 @@ function importReview() {
     fail(`Couldn't read ${fileArg}: ${e instanceof Error ? e.message : e}`)
   }
   for (const k of ['by', 'head', 'base', 'headSha'] as const) if (typeof file[k] !== 'string' || !file[k]) fail(`${fileArg} needs "${k}" (copy it from \`semantic-zoom export\`)`)
-  if (!file.changes && !file.findings) fail(`${fileArg} has neither "changes" nor "findings"`)
+  if (!file.changes && !file.findings && !file.files && !file.folders) fail(`${fileArg} has none of "changes", "findings", "files" or "folders"`)
   const folder = path.resolve(folderArg ?? process.cwd())
   const a = load(folder, file.head, file.base)
   if (a.headSha !== file.headSha)
-    fail(`${file.head} is at ${a.headSha.slice(0, 10)} now, but the file was written for ${file.headSha.slice(0, 10)}. Hunk numbers may have moved: run \`semantic-zoom export\` again and redo the file.`)
+    fail(`${file.head} ${a.uncommitted ? 'or its uncommitted files have' : 'has'} changed since the file was written (${file.headSha.slice(0, 10)}, now ${a.headSha.slice(0, 10)}). Hunk numbers may have moved: run \`semantic-zoom export\` again and redo the file.`)
 
   if (file.changes) {
     if (!Array.isArray(file.changes)) fail('"changes" must be a list')
@@ -162,31 +249,73 @@ function importReview() {
     if (cs.undescribed.length) console.log(`  ${cs.undescribed.length} hunks no change covers (shown as "Not described"): ${cs.undescribed.join(', ')}`)
   }
 
-  if (file.findings) {
-    if (!Array.isArray(file.findings)) fail('"findings" must be a list')
-    const paths = a.files.map((f) => f.path)
-    const onMap = (p: string) => paths.some((f) => f === p || f.startsWith(p.replace(/\/$/, '') + '/'))
-    const unknown = new Set<string>()
-    const findings: Finding[] = file.findings.map((f) => {
-      const severity = SEVERITIES.includes(f.severity) ? f.severity : 'info'
-      const good = (f.paths ?? []).map(String).filter((p) => (onMap(p) ? true : (unknown.add(p), false)))
-      return {
-        severity,
-        kind: 'ai-review',
-        title: String(f.title ?? 'Untitled'),
-        ...(f.detail ? { detail: String(f.detail) } : {}),
-        ...(f.evidence?.length ? { evidence: f.evidence.map(String) } : {}),
-        ...(good.length ? { target: { paths: good } } : {}),
-        by: file.by,
+  // The review holds the findings and the file notes. A part left out of the file keeps what was saved, while that is for
+  // this same commit (or snapshot); one for an older commit would pass for this one, so it goes.
+  if (file.findings || file.files || file.folders) {
+    const before = loadReview(folder, file.head, file.base)
+    const kept = before?.headSha === a.headSha ? before : undefined
+    const review: Review = { by: file.by, generatedAt: new Date().toISOString(), headSha: a.headSha, findings: kept?.findings ?? [], unknownPaths: kept?.unknownPaths ?? [], ...(kept?.files ? { files: kept.files } : {}), ...(kept?.folders ? { folders: kept.folders } : {}) }
+
+    if (file.findings) {
+      if (!Array.isArray(file.findings)) fail('"findings" must be a list')
+      const paths = a.files.map((f) => f.path)
+      const onMap = (p: string) => paths.some((f) => f === p || f.startsWith(p.replace(/\/$/, '') + '/'))
+      const unknown = new Set<string>()
+      review.findings = file.findings.map((f): Finding => {
+        const severity = SEVERITIES.includes(f.severity) ? f.severity : 'info'
+        const good = (f.paths ?? []).map(String).filter((p) => (onMap(p) ? true : (unknown.add(p), false)))
+        return {
+          severity,
+          kind: 'ai-review',
+          title: String(f.title ?? 'Untitled'),
+          ...(f.detail ? { detail: String(f.detail) } : {}),
+          ...(f.evidence?.length ? { evidence: f.evidence.map(String) } : {}),
+          ...(good.length ? { target: { paths: good } } : {}),
+          by: file.by,
+        }
+      })
+      review.unknownPaths = [...unknown]
+      const count = (s: Severity) => review.findings.filter((f) => f.severity === s).length
+      console.log(`findings: ${review.findings.length} saved (${count('violation')} bugs, ${count('warning')} to check, ${count('info')} notes)`)
+      if (unknown.size) console.log(`  dropped paths that aren't on the map: ${[...unknown].join(', ')}`)
+      const bad = file.findings.filter((f) => !SEVERITIES.includes(f.severity)).length
+      if (bad) console.log(`  ${bad} findings had no valid severity and were saved as notes`)
+    }
+
+    if (file.files) {
+      if (!Array.isArray(file.files)) fail('"files" must be a list')
+      const wanted = new Set(toDescribe(a).map((f) => f.path))
+      const notes: Record<string, FileNote> = {}
+      const unknown: string[] = []
+      for (const f of file.files) {
+        const p = String(f?.path ?? '')
+        if (!wanted.has(p)) unknown.push(p)
+        else notes[p] = { about: String(f.about ?? '').trim(), change: String(f.change ?? '').trim() }
       }
-    })
-    const review: Review = { by: file.by, generatedAt: new Date().toISOString(), headSha: a.headSha, findings, unknownPaths: [...unknown] }
+      review.files = notes
+      const missing = [...wanted].filter((p) => !notes[p])
+      console.log(`files: ${Object.keys(notes).length} described`)
+      if (unknown.length) console.log(`  dropped paths that aren't changed files on the map: ${unknown.join(', ')}`)
+      if (missing.length) console.log(`  ${missing.length} changed files have no description: ${missing.join(', ')}`)
+    }
+
+    if (file.folders) {
+      if (!Array.isArray(file.folders)) fail('"folders" must be a list')
+      const wanted = new Set(foldersToDescribe(a))
+      const notes: Record<string, string> = {}
+      const unknown: string[] = []
+      for (const f of file.folders) {
+        const p = String(f?.path ?? '').replace(/\/$/, '')
+        const about = String(f?.about ?? '').trim()
+        if (!wanted.has(p)) unknown.push(p)
+        else if (about) notes[p] = about
+      }
+      review.folders = notes
+      console.log(`folders: ${Object.keys(notes).length} of ${wanted.size} described`)
+      if (unknown.length) console.log(`  dropped paths that aren't folders above changed files: ${unknown.join(', ')}`)
+    }
+
     saveReview(folder, file.head, file.base, review)
-    const count = (s: Severity) => findings.filter((f) => f.severity === s).length
-    console.log(`findings: ${findings.length} saved (${count('violation')} bugs, ${count('warning')} to check, ${count('info')} notes)`)
-    if (unknown.size) console.log(`  dropped paths that aren't on the map: ${[...unknown].join(', ')}`)
-    const bad = file.findings.filter((f) => !SEVERITIES.includes(f.severity)).length
-    if (bad) console.log(`  ${bad} findings had no valid severity and were saved as notes`)
   }
   console.log(`Saved for ${file.head} against ${file.base}. The app shows it within a few seconds, without moving the map.`)
 }

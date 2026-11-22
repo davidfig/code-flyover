@@ -4,6 +4,7 @@
 
 import type { Analysis, FileInfo, FileRole } from '../shared/types.ts'
 import { BAR_H, HEAD_H, ROW_H } from './text/layout.ts'
+import { colW, settings, tabSpaces } from './settings.ts'
 
 /** Analyses written before `role` existed only know about tests. */
 export const roleOf = (f: FileInfo): FileRole => f.role ?? (f.test ? 'test' : 'source')
@@ -247,11 +248,10 @@ function squarify(items: MapNode[], r: { x: number; y: number; w: number; h: num
 // packed the same way at the top. Box size here says how much changed, not how big the file is.
 
 /**
- * A file column's width: 100 characters of 12px code (7.2px each) after the line-number gutter (11.5 characters) and
- * the right margin (8px), so lines up to 100 characters don't wrap. The map's text scale is 1 when this is DIFF_W px
- * on screen (web/map.ts).
+ * A file column's width: the Code width setting's characters of 12px code (7.2px each) after the line-number gutter
+ * (11.5 characters) and the right margin (8px), so lines up to that long don't wrap (settings.ts colW). The map's text
+ * scale is 1 when this is its width in px on screen (web/map.ts).
  */
-export const COL_W = 812
 const PAD = 14
 const GAP = 16
 const ROOT_GAP = 48
@@ -261,19 +261,20 @@ const ASPECT = 1.6
 const NO_DIFF_H = 140
 /** The shortest file box with a diff, so a one-line change still has a box you can see and label. */
 const MIN_H = 120
-/** The tallest a file box gets from its diff alone; a longer diff scrolls inside it (select the file, then scroll). */
-const MAX_H = 1800
+/** The tallest a file box gets from its diff alone (the Tallest file box setting); a longer diff scrolls inside it (select the file, then scroll). */
+const maxH = () => Math.round(settings.tallestFileLines * ROW_H)
 /**
- * Characters of code on a row at COL_W before it wraps, on its first visual line and on continuations: the same sums
- * as text/layout.ts (12px monospace, 7.2px a character, after the number gutters, minus the right margin).
+ * Characters of code on a row at the column width before it wraps, on its first visual line and on continuations
+ * (indented 1.5 characters more): the same sums as text/layout.ts.
  */
-const PER_FIRST = 99
-const PER_CONT = 97
+const perFirst = () => settings.codeColumns - 1
+const perCont = () => settings.codeColumns - 3
 
 /** How many visual rows a line of code takes at COL_W (wrapped as text/layout.ts wraps it, near enough). */
 const visualRows = (s: string): number => {
-  const n = s.replace(/\t/g, '  ').length
-  return n <= PER_FIRST ? 1 : 1 + Math.ceil((n - PER_FIRST) / PER_CONT)
+  const n = s.replace(/\t/g, tabSpaces()).length
+  const first = perFirst()
+  return n <= first ? 1 : 1 + Math.ceil((n - first) / perCont())
 }
 
 /**
@@ -316,7 +317,7 @@ function fileText(f: FileInfo): { shown: number; full: number } {
 function fileHeight(f: FileInfo): { h: number; max: number } {
   if (!f.hunks?.length) return { h: NO_DIFF_H, max: NO_DIFF_H }
   const t = fileText(f)
-  const h = Math.min(MAX_H, Math.max(MIN_H, t.shown))
+  const h = Math.min(maxH(), Math.max(MIN_H, t.shown))
   return { h, max: Math.max(h, t.full) }
 }
 
@@ -409,6 +410,7 @@ function skyline(blocks: Block[], gap: number, aspect: number): { at: { x: numbe
  * for ASPECT.
  */
 function layoutColumns(root: MapNode, a: Analysis, aspect = ASPECT) {
+  const COL_W = colW()
   /** each child's position relative to its parent's content area */
   const local = new Map<MapNode, { x: number; y: number }>()
   const inset = (n: MapNode) => (n.kind === 'root' ? { x: 0, y: 0 } : { x: PAD, y: PAD })

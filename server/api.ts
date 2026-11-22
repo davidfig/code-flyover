@@ -8,10 +8,13 @@
 // GET    /api/branches?repo=<id>                      its local branches, newest first, and the default base
 // GET    /api/analysis?repo=<id>&head=<ref>&base=<ref> the analysis (made now, or from memory), with saved descriptions and review
 // GET    /api/saved?repo=<id>&head=<ref>&base=<ref>    its saved descriptions and review alone (the page checks for new ones)
-// GET    /api/commits?repo=<id>&head=<ref>&base=<ref>  the commits head and base are at now (the page checks for new ones)
+// GET    /api/commits?repo=<id>&head=<ref>&base=<ref>  the commits the analysis would read now (the page checks for new ones)
 // POST   /api/log        { message }                  the page's uncaught errors, printed to the server's output
+// GET    /api/settings                                the settings every window shares (web/settingsStore.ts), or null
+// PUT    /api/settings   { semanticZoomSettings, settings }  saves them
+// POST   /api/settings/export?path=<file.json>        writes the body (an exported settings file) where the save panel said
 //
-// State lives in ~/.semantic-zoom: repos.json, descriptions/<repo id>/<head>..<base>.json and reviews/<repo id>/<head>..<base>.json
+// State lives in ~/.semantic-zoom: repos.json, settings.json, descriptions/<repo id>/<head>..<base>.json and reviews/<repo id>/<head>..<base>.json
 // (AI-written, so they're kept; analyses take about a second, so they're only kept in memory). Descriptions and
 // reviews can also come from an outside AI, through `semantic-zoom export` and `import` (server/review-cli.ts).
 
@@ -23,6 +26,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { analyze } from '../analyzer/analyze.ts'
+import { snapshot } from '../analyzer/git.ts'
 import type { Analysis, ChangeSet, Review } from '../shared/types.ts'
 
 export interface Repo {
@@ -42,10 +46,13 @@ export interface Branch {
   behind: number
   /** checked out in this worktree (the repo's own folder, or one of its worktrees) */
   worktree?: string
+  /** that worktree has uncommitted changes (shown with the branch's commits) */
+  dirty?: boolean
 }
 
 const STATE = path.join(os.homedir(), '.semantic-zoom')
 const REPOS_FILE = path.join(STATE, 'repos.json')
+const SETTINGS_FILE = path.join(STATE, 'settings.json')
 const DESCRIPTIONS = path.join(STATE, 'descriptions')
 const REVIEWS = path.join(STATE, 'reviews')
 const MODELS_DIR = fileURLToPath(new URL('../models/', import.meta.url))
@@ -120,14 +127,55 @@ export function defaultBase(repo: string): string {
   return 'HEAD'
 }
 
-export function branches(repo: Repo): { base: string; branches: Branch[] } {
-  const base = defaultBase(repo.path)
-  const worktrees = new Map<string, string>()
+/** Where each branch is checked out: branch name → folder (the repo's own, or one of its worktrees). */
+function worktrees(repo: Repo): Map<string, string> {
+  const out = new Map<string, string>()
   let at = ''
   for (const line of git(repo.path, ['worktree', 'list', '--porcelain']).split('\n')) {
     if (line.startsWith('worktree ')) at = line.slice(9)
-    else if (line.startsWith('branch refs/heads/')) worktrees.set(line.slice(18), at)
+    else if (line.startsWith('branch refs/heads/')) out.set(line.slice(18), at)
   }
+  return out
+}
+
+/** Whether a folder has uncommitted changes (--no-optional-locks: status mustn't write its index). */
+const isDirty = (folder: string) => {
+  try {
+    return execFileSync('git', ['--no-optional-locks', '-C', folder, 'status', '--porcelain'], { encoding: 'utf8', maxBuffer: 1 << 30, stdio: ['ignore', 'pipe', 'ignore'] }).trim() !== ''
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The commit to read as a branch's head: its tip, or, when it is checked out in a folder with uncommitted changes, a
+ * snapshot of that folder's files (analyzer/git.ts), so the map shows the work as it is now.
+ */
+function headOf(repo: Repo, head: string): { sha: string; worktree?: string } {
+  const sha = tryGit(repo.path, ['rev-parse', '--verify', head + '^{commit}'])
+  if (!sha) throw new HttpError(404, `No branch or commit ${head} in ${repo.name}`)
+  const folder = worktrees(repo).get(head)
+  if (folder && fs.existsSync(folder)) {
+    try {
+      const snap = snapshot(folder)
+      if (snap) return { sha: snap, worktree: folder }
+    } catch (e) {
+      console.error(`Couldn't read the uncommitted changes in ${folder}: ${e instanceof Error ? e.message : e}`)
+    }
+  }
+  return { sha }
+}
+
+/** The commit a branch is compared at: where it left the base (as the analysis does). */
+const mergeBaseOf = (repo: Repo, base: string, headSha: string) => {
+  const baseSha = tryGit(repo.path, ['rev-parse', '--verify', base + '^{commit}'])
+  if (!baseSha) throw new HttpError(404, `No branch or commit ${base} in ${repo.name}`)
+  return tryGit(repo.path, ['merge-base', baseSha, headSha]) ?? baseSha
+}
+
+export function branches(repo: Repo): { base: string; branches: Branch[] } {
+  const base = defaultBase(repo.path)
+  const checkedOut = worktrees(repo)
   const baseName = base.replace(/^origin\//, '')
   const list: Branch[] = []
   const out = git(repo.path, ['for-each-ref', '--sort=-committerdate', '--format=%(refname:short)%09%(objectname)%09%(committerdate:iso-strict)%09%(subject)', 'refs/heads'])
@@ -135,10 +183,11 @@ export function branches(repo: Repo): { base: string; branches: Branch[] } {
     if (!line) continue
     const [name, sha, date, ...subject] = line.split('\t')
     if (name === baseName || name === base) continue // the base itself has nothing to show
-    list.push({ name, sha, date, subject: subject.join('\t'), ahead: 0, behind: 0, worktree: worktrees.get(name) })
+    list.push({ name, sha, date, subject: subject.join('\t'), ahead: 0, behind: 0, worktree: checkedOut.get(name) })
     if (list.length >= MAX_BRANCHES) break
   }
   for (const b of list) {
+    if (b.worktree) b.dirty = isDirty(b.worktree)
     const counts = tryGit(repo.path, ['rev-list', '--left-right', '--count', `${base}...${b.sha}`])
     if (counts) [b.behind, b.ahead] = counts.split(/\s+/).map(Number)
   }
@@ -171,14 +220,12 @@ const savedDescriptions = (repo: Repo, head: string, base: string) => readJson<C
 const savedReview = (repo: Repo, head: string, base: string) => readJson<Review>(reviewFile(repo, head, base))
 
 export function analysisFor(repo: Repo, head: string, base: string): Analysis {
-  const headSha = tryGit(repo.path, ['rev-parse', '--verify', head + '^{commit}'])
-  if (!headSha) throw new HttpError(404, `No branch or commit ${head} in ${repo.name}`)
-  const baseSha = tryGit(repo.path, ['rev-parse', '--verify', base + '^{commit}'])
-  if (!baseSha) throw new HttpError(404, `No branch or commit ${base} in ${repo.name}`)
-  const key = `${repo.id} ${headSha} ${baseSha}`
+  const at = headOf(repo, head)
+  const baseSha = mergeBaseOf(repo, base, at.sha)
+  const key = `${repo.id} ${at.sha} ${baseSha}`
   let a = cache.get(key)
   if (!a) {
-    a = analyze({ repo: repo.path, head, base, modelsDir: MODELS_DIR, id: `${repo.id}--${head}` })
+    a = { ...analyze({ repo: repo.path, head, base, modelsDir: MODELS_DIR, id: `${repo.id}--${head}`, at: at.sha }), ...(at.worktree ? { uncommitted: at.worktree } : {}) }
     cache.set(key, a)
     while (cache.size > MAX_CACHED) cache.delete(cache.keys().next().value!)
   }
@@ -194,6 +241,10 @@ export function saveDescriptions(repoPath: string, head: string, base: string, c
 /** Saves an outside AI's review (`semantic-zoom import`) where the app looks for it. */
 export function saveReview(repoPath: string, head: string, base: string, review: Review) {
   writeJson(reviewFile(addRepo(repoPath), head, base), review)
+}
+
+export function loadReview(repoPath: string, head: string, base: string): Review | undefined {
+  return savedReview(addRepo(repoPath), head, base)
 }
 
 export function loadDescriptions(repoPath: string, head: string, base: string): ChangeSet | undefined {
@@ -214,6 +265,40 @@ const body = (req: IncomingMessage): Promise<Record<string, unknown>> =>
       }
     })
   })
+
+/** A body as text, up to `max` bytes. */
+const rawBody = (req: IncomingMessage, max = 1 << 20): Promise<string> =>
+  new Promise((resolve, reject) => {
+    let raw = ''
+    req.on('data', (c) => {
+      raw += c
+      if (raw.length > max) reject(new HttpError(413, 'Too big'))
+    })
+    req.on('end', () => resolve(raw))
+  })
+
+/**
+ * Requests that write files only come from the app's own page. A page on another site can send a "simple" POST to
+ * localhost without asking first; its Origin header gives it away. JSON bodies also make the browser ask first.
+ */
+const fromApp = (req: IncomingMessage) => {
+  const origin = req.headers.origin
+  if (origin && !/^(https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?|tauri:\/\/localhost)$/.test(origin)) throw new HttpError(403, 'Not from the app')
+  if (!String(req.headers['content-type'] ?? '').startsWith('application/json')) throw new HttpError(415, 'Expected JSON')
+}
+
+/** A settings document as the page sends it: an object with a `settings` object. */
+const settingsDoc = (raw: string) => {
+  let doc: unknown
+  try {
+    doc = JSON.parse(raw)
+  } catch {
+    throw new HttpError(400, 'Not JSON')
+  }
+  const s = (doc as { settings?: unknown } | null)?.settings
+  if (!doc || typeof doc !== 'object' || !s || typeof s !== 'object' || Array.isArray(s)) throw new HttpError(400, 'Not a settings document')
+  return doc
+}
 
 const need = (v: unknown, name: string): string => {
   if (typeof v !== 'string' || !v) throw new HttpError(400, `Missing ${name}`)
@@ -240,6 +325,27 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       console.error(`[page] ${String(b.message ?? '').slice(0, 4000)}`)
       return send(200, {})
     }
+    if (route === 'GET /settings') {
+      try {
+        return send(200, JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')))
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return send(200, null)
+        throw new HttpError(500, `${SETTINGS_FILE} can't be read: ${e instanceof Error ? e.message : e}`)
+      }
+    }
+    if (route === 'PUT /settings') {
+      fromApp(req)
+      writeJson(SETTINGS_FILE, settingsDoc(await rawBody(req)))
+      return send(200, {})
+    }
+    if (route === 'POST /settings/export') {
+      fromApp(req)
+      const file = path.resolve(need(q.get('path'), 'path').replace(/^~(?=$|\/)/, os.homedir()))
+      if (!file.toLowerCase().endsWith('.json')) throw new HttpError(400, 'Settings are exported as a .json file')
+      const doc = settingsDoc(await rawBody(req))
+      fs.writeFileSync(file, JSON.stringify(doc, null, 2) + '\n')
+      return send(200, { path: file })
+    }
     if (route === 'GET /repos') return send(200, readRepos())
     if (route === 'POST /repos') return send(200, addRepo(need((await body(req)).path, 'path')))
     if (route === 'DELETE /repos') {
@@ -253,8 +359,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (route === 'GET /commits') {
       const repo = repoById(q.get('repo'))
-      const at = (ref: string) => tryGit(repo.path, ['rev-parse', '--verify', '--quiet', ref + '^{commit}'])
-      return send(200, { head: at(need(q.get('head'), 'head')), base: at(need(q.get('base') ?? defaultBase(repo.path), 'base')) })
+      // As the analysis reads them: the head's snapshot when it has uncommitted changes, and the merge-base.
+      const at = headOf(repo, need(q.get('head'), 'head'))
+      return send(200, { head: at.sha, base: mergeBaseOf(repo, need(q.get('base') ?? defaultBase(repo.path), 'base'), at.sha) })
     }
     if (route === 'GET /saved') {
       const repo = repoById(q.get('repo'))

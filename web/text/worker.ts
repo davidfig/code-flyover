@@ -2,6 +2,7 @@
 // off the main thread. It owns each file's diff model, so how far each gap is expanded lives here too.
 //
 // In:  { type: 'init', metrics }                                 the face's glyph map and metrics
+//      { type: 'settings', values }                              the page's settings (settings.ts), before the files they lay out
 //      { type: 'files', files: { id, file }[] }                  the analysis' changed files (replaces any before)
 //      { type: 'layout', id, width, fillTo?, seq }               lay a file out at a width (filling a box that tall)
 //      { type: 'expand', id, gap, action, width, seq }           a gap bar's button, then lay it out again
@@ -11,9 +12,11 @@ import type { FileInfo } from '../../shared/types.ts'
 import { diffModel, FILL_STEP, type DiffModel } from '../diffModel.ts'
 import type { FaceMetrics } from '../gl/text.ts'
 import { expandGap, layoutDiff, type GapAction } from './layout.ts'
+import { update, type Settings } from '../settings.ts'
 
 export type ToWorker =
   | { type: 'init'; metrics: FaceMetrics }
+  | { type: 'settings'; values: Settings }
   | { type: 'files'; files: { id: number; file: FileInfo }[] }
   | { type: 'layout'; id: number; width: number; fillTo?: number; seq: number }
   | { type: 'expand'; id: number; gap: number; action: GapAction; width: number; seq: number }
@@ -38,6 +41,7 @@ const send = (id: number, seq: number, model: DiffModel, width: number) => {
 self.onmessage = (e: MessageEvent<ToWorker>) => {
   const msg = e.data
   if (msg.type === 'init') metrics = msg.metrics
+  else if (msg.type === 'settings') update(msg.values, false)
   else if (msg.type === 'files') {
     files.clear()
     models.clear()

@@ -6,7 +6,8 @@
 
 import { rgba } from '../gl/program.ts'
 import { GLYPH_BYTES, RECT_BYTES, type FaceMetrics } from '../gl/text.ts'
-import { STEP, type DiffModel, type Item } from '../diffModel.ts'
+import type { DiffModel, Item } from '../diffModel.ts'
+import { settings, tabSpaces } from '../settings.ts'
 import type { TokenKind } from '../highlight.ts'
 
 export const FONT_PX = 12
@@ -116,7 +117,7 @@ export function layoutDiff(model: DiffModel, m: FaceMetrics, width: number): Lai
     for (const c of text) {
       const cp = c.codePointAt(0)!
       if (cp !== 32 && cp !== 9) out.glyph(x, y, px, glyphOf(cp), color)
-      x += cp === 9 ? adv * 2 : adv
+      x += cp === 9 ? adv * settings.tabWidth : adv
     }
     return x
   }
@@ -137,7 +138,7 @@ export function layoutDiff(model: DiffModel, m: FaceMetrics, width: number): Lai
     const r = it.row
     // Break the line into visual lines: at a space near the edge where there is one, else hard.
     const chars: { c: string; kind: TokenKind }[] = []
-    for (const t of r.tokens) for (const c of t.text.replace(/\t/g, '  ')) chars.push({ c, kind: t.kind })
+    for (const t of r.tokens) for (const c of t.text.replace(/\t/g, tabSpaces())) chars.push({ c, kind: t.kind })
     const lines: (typeof chars)[] = []
     let start = 0
     let per = perFirst
@@ -221,6 +222,7 @@ export function layoutDiff(model: DiffModel, m: FaceMetrics, width: number): Lai
       x += w + 6
     }
     // Down from the hunk above, up from the hunk below: whichever makes sense where the gap is.
+    const STEP = settings.expandLines
     if (hidden <= STEP) button(`Show ${hidden} line${hidden === 1 ? '' : 's'}`, 'all')
     else {
       if (g.where !== 'start') button(`↓ ${STEP}`, 'down')
@@ -239,6 +241,7 @@ export function expandGap(model: DiffModel, gap: number, action: GapAction): voi
   const g = model.gaps[gap]
   if (!g) return
   const hidden = g.to - g.from + 1 - g.top - g.bottom
+  const STEP = settings.expandLines
   if (action === 'down') g.top += Math.min(STEP, hidden)
   else if (action === 'up') g.bottom += Math.min(STEP, hidden)
   else g.top += hidden

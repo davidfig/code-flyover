@@ -118,6 +118,8 @@ export interface Analysis {
   otherChanges: { path: string; status: FileStatus; add: number; del: number }[]
   /** what the branch does, in words, for the zoomed-out map (AI-written; absent if not generated) */
   changes?: ChangeSet
+  /** the worktree whose uncommitted changes are included (the head is a snapshot of its files: analyzer/git.ts) */
+  uncommitted?: string
   /** an outside AI's review of the branch (`semantic-zoom import`): its findings, kept apart from the analyzer's */
   review?: Review
 }
@@ -131,6 +133,18 @@ export interface Review {
   findings: Finding[]
   /** paths its findings named that aren't on the map (dropped from the findings' targets) */
   unknownPaths: string[]
+  /** changed files, by path: what each is, and what this branch did to it (shown on hovering the file's label) */
+  files?: Record<string, FileNote>
+  /** folders that hold changed files, by path: what's kept in each, in a sentence (shown on hovering its name) */
+  folders?: Record<string, string>
+}
+
+/** An AI's two lines about a changed file. */
+export interface FileNote {
+  /** what the file is, as it is now (the same on any branch) */
+  about: string
+  /** what this branch changed in it */
+  change: string
 }
 
 /** A hunk's id: "<path>#<1-based hunk number>". */

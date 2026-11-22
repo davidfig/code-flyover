@@ -7,6 +7,7 @@
 // double-click, and a hook that lets the map take a wheel event first (scrolling a file's diff).
 
 import type { Camera } from './camera.ts'
+import { settings } from '../settings.ts'
 
 export interface InputEvents {
   /** The camera moved, or may be moving: draw. */
@@ -19,7 +20,6 @@ export interface InputEvents {
 
 const WHEEL_GESTURE_GAP_MS = 200
 const CLICK_SLOP_PX = 4
-const DOUBLE_CLICK_MS = 400
 
 export function attachInput(el: HTMLElement, camera: Camera, events: InputEvents): void {
   // ---- wheel: pan, or zoom on a pinch or with ctrl/cmd ----
@@ -41,7 +41,7 @@ export function attachInput(el: HTMLElement, camera: Camera, events: InputEvents
       const r = el.getBoundingClientRect()
       const x = e.clientX - r.left
       const y = e.clientY - r.top
-      if (wheelZooming) camera.zoomAt(x, y, Math.exp(-e.deltaY * unit * 0.01))
+      if (wheelZooming) camera.zoomAt(x, y, Math.exp(-e.deltaY * unit * 0.01 * settings.zoomSpeed))
       else if (events.wheel?.(e, x, y, e.deltaX * unit, e.deltaY * unit)) return
       else camera.panBy(e.deltaX * unit, e.deltaY * unit)
       events.changed()
@@ -60,7 +60,7 @@ export function attachInput(el: HTMLElement, camera: Camera, events: InputEvents
     ev.preventDefault()
     const g = ev as GestureEvent
     const r = el.getBoundingClientRect()
-    camera.zoomAt(g.clientX - r.left, g.clientY - r.top, g.scale / gestureScale)
+    camera.zoomAt(g.clientX - r.left, g.clientY - r.top, (g.scale / gestureScale) ** settings.zoomSpeed)
     gestureScale = g.scale
     events.changed()
   })
@@ -101,7 +101,7 @@ export function attachInput(el: HTMLElement, camera: Camera, events: InputEvents
     if (pointers.size >= 2) {
       const [a, b] = [...pointers.values()]
       const dist = Math.hypot(a.x - b.x, a.y - b.y)
-      if (pinchDist > 0) camera.zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, dist / pinchDist)
+      if (pinchDist > 0) camera.zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, (dist / pinchDist) ** settings.zoomSpeed)
       // Both fingers moving together also pan.
       camera.panBy((prev.x - p.x) / 2, (prev.y - p.y) / 2)
       pinchDist = dist
@@ -122,7 +122,7 @@ export function attachInput(el: HTMLElement, camera: Camera, events: InputEvents
     if (pointers.size > 0) return
     if (down && !down.moved && e.type === 'pointerup') {
       const p = local(e)
-      const double = e.timeStamp - lastClick.t < DOUBLE_CLICK_MS && Math.hypot(p.x - lastClick.x, p.y - lastClick.y) < CLICK_SLOP_PX * 2
+      const double = e.timeStamp - lastClick.t < settings.doubleClickMs && Math.hypot(p.x - lastClick.x, p.y - lastClick.y) < CLICK_SLOP_PX * 2
       lastClick = { t: double ? -Infinity : e.timeStamp, ...p }
       events.click(p.x, p.y, double)
     } else if (down?.moved && trail.length >= 2) {

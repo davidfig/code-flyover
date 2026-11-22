@@ -14,28 +14,11 @@
   <body>
     <header>
       <div class="brand">Semantic Zoom</div>
-      <select id="repo" aria-label="Repo"></select>
-      <select id="branch" aria-label="Branch"></select>
+      <span id="repo"></span>
+      <span id="branch"></span>
       <nav id="crumbs" aria-label="Where you are on the map"></nav>
-      <div class="menu">
-        <button id="showBtn" aria-haspopup="true" aria-expanded="false" aria-controls="showMenu">Show <span class="count" id="showCount"></span><span class="caret">▾</span></button>
-        <div id="showMenu" class="menu-pop" role="menu" hidden>
-          <div class="group" role="group" aria-label="Files">
-            <div class="group-title">Files</div>
-            <label role="menuitemcheckbox"><input type="checkbox" id="showUnchanged" /> Unchanged files <span class="hint">whole repo</span></label>
-            <label role="menuitemcheckbox"><input type="checkbox" id="showTests" /> Tests</label>
-            <label role="menuitemcheckbox"><input type="checkbox" id="showLocales" /> Translations</label>
-          </div>
-          <hr />
-          <div class="group" role="group" aria-label="Highlight">
-            <div class="group-title">Highlight</div>
-            <label role="menuitemcheckbox"><input type="checkbox" id="showImpacted" /> Importers of changed files</label>
-            <label role="menuitemcheckbox"><input type="checkbox" id="dimUnchanged" /> Dim unchanged files</label>
-            <label role="menuitemcheckbox"><input type="checkbox" id="showTiming" /> Frame timing</label>
-          </div>
-        </div>
-      </div>
       <button id="fit" title="Show the whole map">Whole map</button>
+      <button id="settingsBtn" class="icon" title="Settings (⌘,)" aria-label="Settings"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M10.3 3h3.4l.5 2.4 1.7.9 2.3-.9 1.7 2.9-1.9 1.6v2l1.9 1.6-1.7 2.9-2.3-.9-1.7.9-.5 2.6h-3.4l-.5-2.6-1.7-.9-2.3.9-1.7-2.9 1.9-1.6v-2L4.1 8.3l1.7-2.9 2.3.9 1.7-.9z"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
     </header>
     <main>
       <div id="mapwrap">

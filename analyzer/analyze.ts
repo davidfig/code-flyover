@@ -10,6 +10,8 @@ export interface AnalyzeOptions {
   base: string
   modelsDir: string
   id?: string
+  /** The commit to read as the head, when it isn't `head` itself: a worktree's snapshot (git.snapshot). */
+  at?: string
 }
 
 const SKIP_DIR = /(^|\/)(node_modules|dist|build|target|vendor|public|generated|\.claude|coverage)\//
@@ -22,7 +24,7 @@ const roleOf = (f: string): FileRole => (isTest(f) ? 'test' : isGenerated(f) ? '
 export function analyze(opts: AnalyzeOptions): Analysis {
   const { repo } = opts
   const repoName = path.basename(repo.replace(/\/$/, ''))
-  const headSha = git.revParse(repo, opts.head)
+  const headSha = opts.at ?? git.revParse(repo, opts.head)
   const baseSha = git.mergeBase(repo, git.revParse(repo, opts.base), headSha)
 
   const headFiles = git.listFiles(repo, headSha)
@@ -386,7 +388,7 @@ export function analyze(opts: AnalyzeOptions): Analysis {
     base: opts.base,
     headSha,
     baseSha,
-    title: commits[commits.length - 1]?.subject ?? opts.head,
+    title: commits.filter((c) => c.subject !== git.UNCOMMITTED).at(-1)?.subject ?? opts.head,
     commits,
     generatedAt: new Date().toISOString(),
     model,

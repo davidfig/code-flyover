@@ -1,13 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The window, and the app the local server shows in it, may pick a folder, drag the window, and hear menu clicks.",
+  "description": "The window, and the app the local server shows in it, may pick a folder, pick where to export settings, drag the window, and hear menu clicks.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://localhost:5197/*"]
   },
   "permissions": [
     "dialog:allow-open",
+    "dialog:allow-save",
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "core:event:allow-listen",

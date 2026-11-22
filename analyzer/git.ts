@@ -1,7 +1,14 @@
 // Read-only git access. Everything is read from commits, so the repo's
 // working tree (and other agents' uncommitted work) is never touched.
+//
+// Uncommitted work is read the same way: `snapshot` makes a commit of a worktree's files as they are, through an index
+// of its own, that no branch points at. It adds objects to the repo's object store (git gc clears them once they're old)
+// and changes nothing else: not the files, the worktree's index or any ref.
 
 import { execFileSync, spawnSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import type { DiffLine, Hunk } from '../shared/types.ts'
 
 export function git(repo: string, args: string[]): string {
@@ -103,4 +110,42 @@ export function commits(repo: string, base: string, head: string): { sha: string
       const [sha, ...rest] = l.split('\t')
       return { sha, subject: rest.join('\t') }
     })
+}
+
+/** The subject of a worktree's snapshot commit: how its uncommitted changes show among the branch's commits. */
+export const UNCOMMITTED = 'Uncommitted changes'
+
+/** Fixed, so a snapshot of the same files on the same commit is the same commit: its id says whether anything changed. */
+const SNAPSHOT_ENV = {
+  GIT_AUTHOR_NAME: 'Semantic Zoom',
+  GIT_AUTHOR_EMAIL: 'semantic-zoom@localhost',
+  GIT_AUTHOR_DATE: '@0 +0000',
+  GIT_COMMITTER_NAME: 'Semantic Zoom',
+  GIT_COMMITTER_EMAIL: 'semantic-zoom@localhost',
+  GIT_COMMITTER_DATE: '@0 +0000',
+}
+
+/**
+ * A commit of a worktree's files as they are now (tracked and untracked, less what .gitignore leaves out), on top of its
+ * HEAD; null when it has no uncommitted changes. The same files give the same commit id.
+ */
+export function snapshot(worktree: string): string | null {
+  // --no-optional-locks: a plain `git status` may write the worktree's index to refresh it.
+  const status = execFileSync('git', ['--no-optional-locks', '-C', worktree, 'status', '--porcelain'], { encoding: 'utf8', maxBuffer: 1 << 30 })
+  if (!status.trim()) return null
+  const run = (args: string[], env: Record<string, string> = {}) =>
+    execFileSync('git', ['-C', worktree, ...args], { encoding: 'utf8', maxBuffer: 1 << 30, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  // A copy of the worktree's index, so `add` only reads the files whose size or time changed.
+  const own = run(['rev-parse', '--path-format=absolute', '--git-path', 'index'])
+  const index = path.join(os.tmpdir(), `semantic-zoom-index-${process.pid}-${Math.random().toString(36).slice(2)}`)
+  try {
+    if (fs.existsSync(own)) fs.copyFileSync(own, index)
+    run(['add', '-A'], { GIT_INDEX_FILE: index })
+    const tree = run(['write-tree'], { GIT_INDEX_FILE: index })
+    const head = run(['rev-parse', 'HEAD'])
+    if (tree === run(['rev-parse', 'HEAD^{tree}'])) return null
+    return run(['commit-tree', '--no-gpg-sign', tree, '-p', head, '-m', UNCOMMITTED], SNAPSHOT_ENV)
+  } finally {
+    fs.rmSync(index, { force: true })
+  }
 }

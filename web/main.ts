@@ -1,7 +1,10 @@
 import type { Analysis, ChangeSet, Finding, Review } from '../shared/types.ts'
 import { esc, ZoomMap, type Level } from './map.ts'
-import { renderDiffView } from './diffView.ts'
 import { roleOf, type MapNode } from './layout.ts'
+import { picker, type Picker } from './picker.ts'
+import { DEFS, LAYOUT_KEYS, onSettingsChange, settings, update, type SettingKey } from './settings.ts'
+import { loadSettings } from './settingsStore.ts'
+import { openSettings } from './settingsDialog.ts'
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T
 
@@ -9,14 +12,9 @@ const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as
 let analysis: Analysis
 let map: ZoomMap
 let activeFinding = -1
-/** How often the page looks for new commits and newly saved reviews while it's shown. */
-const LIVE_CHECK_MS = 4000
-
-const PANEL_KEY = 'semantic-zoom:panelWidth'
-const PANEL_DEFAULT = 400
 const PANEL_MIN = 260
 
-/** The side panel's width: dragged with the divider (or arrow keys), remembered in localStorage. */
+/** The side panel's width: dragged with the divider (or arrow keys), kept as the Side panel width setting. */
 function setupSplitter() {
   const panel = $('#panel')
   const splitter = $('#splitter')
@@ -25,13 +23,15 @@ function setupSplitter() {
     const width = clamp(w)
     panel.style.width = width + 'px'
     splitter.setAttribute('aria-valuenow', String(width))
-    if (save) {
-      try { localStorage.setItem(PANEL_KEY, String(width)) } catch {}
-    }
+    if (save) update({ panelWidth: width })
   }
-  let saved: number | null = null
-  try { saved = Number(localStorage.getItem(PANEL_KEY)) || null } catch {}
-  apply(saved ?? PANEL_DEFAULT, false)
+  apply(settings.panelWidth, false)
+  onSettingsChange((changed) => changed.includes('panelWidth') && apply(settings.panelWidth, false))
+  // The panel's text size: its CSS is in fixed px around 13px body text, so its content is scaled as a whole.
+  const body = $('#panel-body')
+  const textSize = () => (body.style.zoom = String(settings.panelTextPx / DEFS.panelTextPx.default))
+  textSize()
+  onSettingsChange((changed) => changed.includes('panelTextPx') && textSize())
   splitter.setAttribute('aria-valuemin', String(PANEL_MIN))
 
   splitter.addEventListener('pointerdown', (e) => {
@@ -55,7 +55,7 @@ function setupSplitter() {
     splitter.addEventListener('pointerup', up)
     splitter.addEventListener('pointercancel', up)
   })
-  splitter.addEventListener('dblclick', () => apply(PANEL_DEFAULT, true))
+  splitter.addEventListener('dblclick', () => apply(DEFS.panelWidth.default, true))
   splitter.addEventListener('keydown', (e) => {
     const step = e.shiftKey ? 80 : 20
     if (e.key === 'ArrowLeft') apply(panel.offsetWidth + step, true)
@@ -63,50 +63,9 @@ function setupSplitter() {
     else return
     e.preventDefault()
   })
-  // Keep it within bounds when the window shrinks.
-  window.addEventListener('resize', () => apply(panel.offsetWidth, false))
+  // Keep it within bounds when the window shrinks, and back to the setting when it grows again.
+  window.addEventListener('resize', () => apply(settings.panelWidth, false))
 }
-
-/** The Show menu: opens on its button, closes on a click outside, Esc, or Tab out; the button counts what's on. */
-function setupShowMenu() {
-  const btn = $<HTMLButtonElement>('#showBtn')
-  const pop = $('#showMenu')
-  const set = (open: boolean) => {
-    pop.hidden = !open
-    btn.setAttribute('aria-expanded', String(open))
-    if (open) pop.querySelector<HTMLInputElement>('input')?.focus()
-  }
-  btn.onclick = (e) => {
-    e.stopPropagation()
-    set(pop.hidden)
-  }
-  document.addEventListener('pointerdown', (e) => {
-    const t = e.target
-    if (!pop.hidden && !(t instanceof Element && t.closest('.menu'))) set(false)
-  })
-  pop.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      e.stopPropagation()
-      set(false)
-      btn.focus()
-    }
-  })
-  // Tabbing out of the menu closes it. Only when focus lands on something else: Safari and the desktop app (WebKit)
-  // don't focus a checkbox you click, so a click inside moves focus to nothing (relatedTarget null). Clicks outside
-  // are the pointerdown handler's job.
-  pop.addEventListener('focusout', (e) => {
-    const to = e.relatedTarget as Node | null
-    if (to && !pop.contains(to) && to !== btn) set(false)
-  })
-}
-
-/** How many view options differ from the defaults, shown on the Show button. */
-function updateShowCount() {
-  const changed = Object.keys(DEFAULTS).filter((k) => map.opts[k as keyof typeof DEFAULTS] !== DEFAULTS[k as keyof typeof DEFAULTS]).length
-  $('#showCount').textContent = changed ? String(changed) : ''
-  $('#showBtn').title = changed ? `${changed} option${changed === 1 ? '' : 's'} changed from the default` : 'What the map shows'
-}
-let DEFAULTS: ZoomMap['opts']
 
 // ---------- the desktop app (src-tauri) ----------
 
@@ -120,7 +79,7 @@ const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__
 // ---------- repos and branches (server/api.ts) ----------
 
 interface Repo { id: string; name: string; path: string }
-interface Branch { name: string; sha: string; date: string; subject: string; ahead: number; behind: number; worktree?: string }
+interface Branch { name: string; sha: string; date: string; subject: string; ahead: number; behind: number; worktree?: string; dirty?: boolean }
 
 let repos: Repo[] = []
 /** What's open: from the URL's hash, #repo=<id>&head=<branch>&base=<ref> (base left out: the repo's default). */
@@ -188,34 +147,48 @@ async function removeRepo(repo: Repo) {
   }
 }
 
+// The header's pickers (picker.ts), in place of the <span>s index.html holds for them.
+const repoPicker = picker({
+  label: 'Repo',
+  groups: () => [{ items: repos.map((r) => ({ value: r.id, label: r.name, title: r.path })) }],
+  commands: () => [
+    { label: 'Add a repo…', run: () => void addRepo() },
+    ...(current ? [{ label: `Remove ${current.repo.name} from the list`, run: () => current && void removeRepo(current.repo) }] : []),
+  ],
+  onPick: (id) => go(id),
+})
+const branchPicker = picker({
+  label: 'Branch',
+  groups: () => {
+    if (!current || !branchList) return []
+    const known = branchList.branches.some((b) => b.name === current!.head)
+    return [{
+      items: [
+        ...(known ? [] : [{ value: current.head, label: current.head }]),
+        ...branchList.branches.map((b) => ({
+          value: b.name,
+          label: b.name,
+          detail: `${b.ahead} ahead · ${ago(b.date)}${b.worktree ? ' · checked out' : ''}`,
+          title: `${b.subject}${b.worktree ? `\n${b.worktree}` : ''}`,
+        })),
+      ],
+    }]
+  },
+  onPick: (name) => current && go(current.repo.id, name),
+})
+repoPicker.el.id = 'repo'
+branchPicker.el.id = 'branch'
+$('#repo').replaceWith(repoPicker.el)
+$('#branch').replaceWith(branchPicker.el)
+
 function renderRepoPicker() {
-  const sel = $<HTMLSelectElement>('#repo')
-  const open = current?.repo
-  sel.innerHTML =
-    repos.map((r) => `<option value="${esc(r.id)}" title="${esc(r.path)}">${esc(r.name)}</option>`).join('') +
-    `<optgroup label="──────────"><option value=":add">Add a repo…</option>${open ? `<option value=":remove">Remove ${esc(open.name)} from the list</option>` : ''}</optgroup>`
-  sel.value = open?.id ?? ''
+  repoPicker.set(current?.repo.id ?? '', current ? undefined : 'No repo')
 }
 
 function renderBranchPicker() {
-  const sel = $<HTMLSelectElement>('#branch')
-  if (!current || !branchList || branchList.repo !== current.repo.id) {
-    sel.innerHTML = ''
-    sel.disabled = true
-    return
-  }
-  sel.disabled = false
-  const list = branchList.branches
-  const known = list.some((b) => b.name === current!.head)
-  sel.innerHTML =
-    (known ? '' : `<option value="${esc(current.head)}">${esc(current.head)}</option>`) +
-    list
-      .map((b) => {
-        const where = b.worktree ? ' · checked out' : ''
-        return `<option value="${esc(b.name)}" title="${esc(b.subject)}${b.worktree ? `\n${esc(b.worktree)}` : ''}">${esc(b.name)} · ${b.ahead} ahead · ${ago(b.date)}${where}</option>`
-      })
-      .join('')
-  sel.value = current.head
+  const ready = !!current && !!branchList && branchList.repo === current.repo.id
+  branchPicker.disabled = !ready
+  branchPicker.set(ready ? current!.head : '', ready ? undefined : '—')
 }
 
 async function loadBranches(repo: Repo) {
@@ -233,6 +206,14 @@ async function route() {
     renderRepoPicker()
     renderBranchPicker()
     return panelMessage(`<h2>No repos yet</h2><p>Run <code>semantic-zoom</code> in a repo, or add one here.</p>${addRepoButton}`)
+  }
+  // A repo added since the list was read (`semantic-zoom` in a terminal, or a script): read the list again.
+  if (p.get('repo') && !repos.some((r) => r.id === p.get('repo'))) {
+    try {
+      repos = await api<Repo[]>('/api/repos')
+    } catch {}
+    if (seq !== routing) return
+    renderRepoPicker()
   }
   let lastRepo: string | null = null
   try { lastRepo = localStorage.getItem(LAST_REPO_KEY) } catch {}
@@ -298,7 +279,6 @@ async function showNewlySaved(): Promise<boolean> {
   const scroll = panel.scrollTop
   renderPanel()
   panel.scrollTop = scroll
-  if (map.selected) showSelection(map.selected)
   flashNote(reviewNew && changesNew ? 'AI review and change descriptions updated' : reviewNew ? 'AI review updated' : 'Change descriptions updated')
   return true
 }
@@ -350,7 +330,7 @@ async function stayLive() {
       map.load(analysis)
       renderPanel()
       panel.scrollTop = scroll
-      flashNote(moved ? `Updated to ${head}’s new commit ${a.headSha.slice(0, 7)}` : `Updated: ${base} moved to ${a.baseSha.slice(0, 7)}`)
+      flashNote(!moved ? `Updated: ${base} moved to ${a.baseSha.slice(0, 7)}` : a.uncommitted ? `Updated: ${head}’s uncommitted changes` : `Updated to ${head}’s new commit ${a.headSha.slice(0, 7)}`)
       void loadBranches(repo).then(renderBranchPicker, () => {})
       return
     }
@@ -369,39 +349,53 @@ const report = (message: string) => {
 window.addEventListener('error', (e) => report(`${e.message} at ${e.filename}:${e.lineno}:${e.colno}${e.error?.stack ? '\n' + e.error.stack : ''}`))
 window.addEventListener('unhandledrejection', (e) => report(`Unhandled: ${e.reason instanceof Error ? e.reason.stack ?? e.reason.message : String(e.reason)}`))
 
+/** The map's view options (MapOptions): settings, in the Settings dialog's Map group. */
+const SHOW_KEYS = ['showImpacted', 'dimUnchanged', 'showTests', 'showLocales', 'showUnchanged', 'showTiming'] as const
+const showOptions = () => Object.fromEntries(SHOW_KEYS.map((k) => [k, settings[k]])) as unknown as ZoomMap['opts']
+
+/** Settings changed (from the dialog, the divider, an import, another window): passes them on to what uses them. */
+function settingsChanged(changed: SettingKey[]) {
+  const show = changed.filter((k) => (SHOW_KEYS as readonly string[]).includes(k))
+  if (show.length) map.setOptions(showOptions())
+  const rest = changed.filter((k) => !show.includes(k) && k !== 'panelWidth' && k !== 'panelTextPx')
+  if (rest.length) map.settingsChanged(rest, rest.some((k) => LAYOUT_KEYS.includes(k)))
+  if (changed.includes('liveCheckSeconds')) startLiveChecks()
+}
+
+let liveTimer: ReturnType<typeof setInterval> | undefined
+/** Looks for new commits and newly saved reviews every Check for new commits seconds while the page is shown. */
+function startLiveChecks() {
+  clearInterval(liveTimer)
+  liveTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') void stayLive()
+  }, settings.liveCheckSeconds * 1000)
+}
+
 async function main() {
+  await loadSettings()
   setupSplitter()
-  setupShowMenu()
   map = new ZoomMap($('#map'), {
-    onSelect: (n) => showSelection(n),
     onView: (level, trail) => showView(level, trail),
     onChange: (i) => goToChange(i),
   })
   await map.init()
+  map.setOptions(showOptions())
+  onSettingsChange(settingsChanged)
 
-  const repoSel = $<HTMLSelectElement>('#repo')
-  repoSel.onchange = () => {
-    if (repoSel.value === ':add') return addRepo()
-    if (repoSel.value === ':remove') return current && removeRepo(current.repo)
-    go(repoSel.value)
-  }
-  const branchSel = $<HTMLSelectElement>('#branch')
-  branchSel.onchange = () => current && go(current.repo.id, branchSel.value)
   // The view stays live: new commits and newly saved reviews show by themselves, whether the window is in front (the
   // session running beside it) or comes back to the front.
   window.addEventListener('focus', () => {
     void stayLive()
     if (current) void loadBranches(current.repo).then(renderBranchPicker, () => {})
   })
-  setInterval(() => {
-    if (document.visibilityState === 'visible') void stayLive()
-  }, LIVE_CHECK_MS)
+  startLiveChecks()
   if (tauri) {
     // The window's title bar is the header: room for the window buttons, and dragging it moves the window.
     document.documentElement.classList.add('tauri')
     for (const el of [$('header'), $('header .brand')]) el.setAttribute('data-tauri-drag-region', '')
     tauri.event.listen('native-menu', ({ payload }) => {
-      if (payload === 'open-repo') addRepo()
+      if (payload === 'settings') openSettings()
+      else if (payload === 'open-repo') addRepo()
       else if (payload === 'whole-map') $('#fit').click()
       else if (payload === 'update-branch') {
         branchList = null // read the branches again too
@@ -418,20 +412,14 @@ async function main() {
   window.addEventListener('hashchange', () => route())
   route()
 
-  DEFAULTS = { ...map.opts }
-  for (const id of ['showImpacted', 'dimUnchanged', 'showTests', 'showLocales', 'showUnchanged', 'showTiming'] as const) {
-    const box = $<HTMLInputElement>('#' + id)
-    let saved: string | null = null
-    try { saved = localStorage.getItem('semantic-zoom:' + id) } catch {}
-    if (saved !== null && saved !== String(map.opts[id])) map.setOptions({ [id]: saved === 'true' })
-    box.checked = map.opts[id]
-    box.onchange = () => {
-      try { localStorage.setItem('semantic-zoom:' + id, String(box.checked)) } catch {}
-      map.setOptions({ [id]: box.checked })
-      updateShowCount()
+  $('#settingsBtn').onclick = () => openSettings()
+  // ⌘, (Ctrl+, elsewhere), as in every Mac app. The desktop app's menu has it too, and gets there first.
+  window.addEventListener('keydown', (e) => {
+    if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault()
+      openSettings()
     }
-  }
-  updateShowCount()
+  })
   $('#fit').onclick = () => {
     map.highlight = []
     map.highlightEdge = null
@@ -440,7 +428,7 @@ async function main() {
     setActive(-1)
   }
   window.addEventListener('keydown', (e) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return
+    if (e.target instanceof HTMLInputElement) return
     if (e.key === 'Escape') {
       // Drops the selection; the view stays where it is (Whole map resets it).
       map.clearSelection()
@@ -455,10 +443,28 @@ async function main() {
 }
 
 /** What the branch is compared with: the repo's default base, or any other branch. */
+let basePicker: Picker | null = null
 function baseSelect() {
+  basePicker = null
   if (!current || !branchList) return `<code>${esc(analysis.base)}</code>`
-  const names = [...new Set([branchList.base, current.base, ...branchList.branches.map((b) => b.name).filter((n) => n !== current!.head)])]
-  return `<select id="base" aria-label="Compared with">${names.map((n) => `<option value="${esc(n)}"${n === current!.base ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`
+  const names = [...new Set([branchList.base, current.base, ...branchList.branches.map((b) => b.name).filter((n) => n !== current!.head)].filter(Boolean))]
+  basePicker = picker({
+    label: 'Compared with',
+    groups: () => [{ items: names.map((n) => ({ value: n, label: n, detail: n === branchList?.base ? 'default' : undefined })) }],
+    onPick: (n) => current && go(current.repo.id, current.head, n === branchList?.base ? undefined : n),
+  })
+  basePicker.el.classList.add('inline')
+  basePicker.set(current.base || branchList.base)
+  return `<span id="base"></span>`
+}
+
+/** "3 commits", "3 commits and uncommitted changes", "uncommitted changes" (the snapshot isn't a commit of the branch's). */
+function commitCount(a: Analysis): string {
+  const n = a.commits.length - (a.uncommitted ? 1 : 0)
+  const commits = `${n} commit${n === 1 ? '' : 's'}`
+  if (!a.uncommitted) return commits
+  const changes = `<span class="uncommitted" title="The files in ${esc(a.uncommitted)} as they are now, saved or not committed">uncommitted changes</span>`
+  return n ? `${commits} and ${changes}` : changes
 }
 
 function renderPanel() {
@@ -475,7 +481,7 @@ function renderPanel() {
     <section class="pr">
       <h1>${esc(a.title)}</h1>
       <div id="newer" class="newer" hidden></div>
-      <div class="sub"><b>${esc(a.repo)}</b> · ${esc(a.head)} compared with ${baseSelect()} · ${a.commits.length} commit${a.commits.length === 1 ? '' : 's'}</div>
+      <div class="sub"><b>${esc(a.repo)}</b> · ${esc(a.head)} compared with ${baseSelect()} · ${commitCount(a)}</div>
       <div class="stats"><span>${source.length} source files</span><span class="plus">+${add}</span><span class="minus">−${del}</span>${muted.length ? `<span title="Tests, translations and generated files: on the map but muted">${muted.length} tests/translations</span>` : ''}${a.otherChanges.length ? `<span>${a.otherChanges.length} other files</span>` : ''}</div>
       <details><summary>Commits</summary><ul class="commits">${commits}</ul></details>
     </section>
@@ -489,7 +495,6 @@ function renderPanel() {
       <div class="hint">j / k step through findings · double-click a box to read it · Esc clears the selection</div>
     </section>
     ${changesHtml()}
-    <section id="selection"></section>
     ${a.otherChanges.length ? `<section><details><summary>Changed files not on the map (${a.otherChanges.length})</summary><ul class="other">${a.otherChanges.map((o) => `<li><span class="st ${o.status}">${o.status}</span> ${esc(o.path)} <span class="plus">+${o.add}</span> <span class="minus">−${o.del}</span></li>`).join('')}</ul></details></section>` : ''}
   `
   document.querySelectorAll<HTMLElement>('.finding').forEach((el) => {
@@ -501,8 +506,7 @@ function renderPanel() {
     el.onmouseenter = () => map.mark(map.nodesFor(changeFiles(i)))
     el.onmouseleave = () => map.mark([])
   })
-  const baseSel = document.querySelector<HTMLSelectElement>('#base')
-  if (baseSel) baseSel.onchange = () => current && go(current.repo.id, current.head, baseSel.value === branchList?.base ? undefined : baseSel.value)
+  if (basePicker) document.querySelector('#base')?.replaceWith(basePicker.el)
   activeFinding = -1
 }
 
@@ -610,55 +614,6 @@ function showView(_level: Level, trail: MapNode[]) {
       else map.zoomTo([n])
     }
   })
-}
-
-function showSelection(n: MapNode | null) {
-  const el = $('#selection')
-  if (!el) return
-  if (!n) {
-    el.innerHTML = ''
-    return
-  }
-  const a = analysis
-  const filesIn = (m: MapNode): number[] => (m.kind === 'file' ? [m.file!] : m.children.flatMap(filesIn))
-  const inside = new Set(filesIn(n))
-  // A file lists all its imports and importers (the map outlines them in the same colours); a folder or module only
-  // the ones this branch changed, since all of a folder's imports would be a long list of the usual.
-  const all = n.kind === 'file'
-  const byState = { added: 0, removed: 1, both: 2 }
-  const edgesOut = a.edges.filter((e) => inside.has(e.from) && !inside.has(e.to) && (all || e.state !== 'both')).sort((x, y) => byState[x.state] - byState[y.state])
-  const edgesIn = a.edges.filter((e) => inside.has(e.to) && !inside.has(e.from) && (all || e.state !== 'both')).sort((x, y) => byState[x.state] - byState[y.state])
-  const edgeList = (list: typeof edgesOut, dir: 'out' | 'in') =>
-    list
-      .slice(0, 40)
-      .map((e) => {
-        const i = dir === 'out' ? e.to : e.from
-        const other = a.files[i]
-        const tag = e.state === 'both' ? '' : `<span class="st ${e.state}">${e.state === 'added' ? 'new' : 'removed'}</span> `
-        // Clicking one flies to it, if it's on the map (a test with Tests off isn't).
-        const name = map.hasFile(i) && e.state !== 'removed' ? `<a class="goto" data-file="${i}">${esc(other.path)}</a>` : `<span class="off">${esc(other.path)}</span>`
-        return `<li class="${e.state}">${tag}${name}${e.line ? `<code>${esc(e.line)}</code>` : ''}</li>`
-      })
-      .join('') + (list.length > 40 ? `<li class="more">and ${list.length - 40} more</li>` : '')
-  const heading = (label: string, sw: string, list: typeof edgesOut) => `<h3>${all ? `<i class="sw ${sw}"></i>` : ''}${label} (${list.length})</h3>`
-  const info = n.kind === 'file' ? a.files[n.file!] : null
-  const mod = a.model.modules.find((m) => m.id === n.module)
-  const partOf = info && a.changes ? a.changes.items.flatMap((c, i) => (c.files.includes(info.path) ? [`<a class="partof" data-i="${i}">${i + 1}. ${esc(c.title)}</a>`] : [])) : []
-  el.innerHTML = `
-    <h2>Selected</h2>
-    <div class="selname">${esc(n.path || n.name)}</div>
-    <div class="sub">${n.kind}${mod?.description ? ` · ${esc(mod.description)}` : ''}</div>
-    ${partOf.length ? `<div class="partofs">Part of ${partOf.join(', ')}</div>` : ''}
-    ${info ? `<div class="stats"><span class="st ${info.status}">${info.status}</span>${info.oldPath ? `<span>from ${esc(info.oldPath)}</span>` : ''}<span>${info.lines} lines</span><span class="plus">+${info.add}</span><span class="minus">−${info.del}</span></div>` : `<div class="stats"><span>${n.changed} changed files</span><span class="plus">+${n.add}</span><span class="minus">−${n.del}</span></div>`}
-    ${edgesOut.length ? `${heading(all ? 'Imports' : 'Imports changed', 'imports', edgesOut)}<ul class="edges">${edgeList(edgesOut, 'out')}</ul>` : ''}
-    ${edgesIn.length ? `${heading(all ? 'Imported by' : 'Importers changed', 'importers', edgesIn)}<ul class="edges">${edgeList(edgesIn, 'in')}</ul>` : ''}
-    ${info?.hunks ? `<h3>Diff</h3><div class="diff panel-diff"></div>` : ''}
-  `
-  el.querySelectorAll<HTMLElement>('.partof').forEach((x) => (x.onclick = () => goToChange(Number(x.dataset.i))))
-  el.querySelectorAll<HTMLElement>('.goto').forEach((x) => (x.onclick = () => map.goToFile(Number(x.dataset.file))))
-  const panelDiff = el.querySelector<HTMLElement>('.panel-diff')
-  if (panelDiff && info) renderDiffView(panelDiff, info, { selfScroll: true })
-  el.scrollIntoView({ block: 'nearest' })
 }
 
 main()

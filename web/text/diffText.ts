@@ -6,6 +6,7 @@ import type { FileInfo } from '../../shared/types.ts'
 import { loadFace, TextBlock, TextRenderer, type FaceMetrics, type GpuFace, type Placement } from '../gl/text.ts'
 import type { ButtonHit, GapAction, Laid } from './layout.ts'
 import type { ToWorker } from './worker.ts'
+import type { Settings } from '../settings.ts'
 
 /** One file's text: on the GPU once laid out. */
 export interface FileText {
@@ -59,6 +60,11 @@ export class DiffText {
 
   private post(msg: ToWorker) {
     this.worker.postMessage(msg)
+  }
+
+  /** The settings text layout depends on (settings.ts): sent before the files, which lay out with them. */
+  setSettings(values: Settings) {
+    this.post({ type: 'settings', values })
   }
 
   /** The analysis' files with diffs, by index into analysis.files. Forgets everything laid out before. */

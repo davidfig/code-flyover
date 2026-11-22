@@ -1,4 +1,4 @@
-//! The menu bar. The app's own items (Open Repo, Whole Map, Update Branch) send their id to the page as the
+//! The menu bar. The app's own items (Settings, Open Repo, Whole Map, Update Branch) send their id to the page as the
 //! `native-menu` event (lib.rs), which runs them; the rest are system items.
 
 use tauri::menu::{AboutMetadata, Menu, MenuItemBuilder, PredefinedMenuItem, Submenu};
@@ -15,6 +15,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         &[
             &PredefinedMenuItem::about(app, Some("About Semantic Zoom"), Some(about))?,
+            &item("settings", "Settings…", "CmdOrCtrl+,")?,
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
             &PredefinedMenuItem::show_all(app, None)?,
