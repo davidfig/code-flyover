@@ -32,6 +32,10 @@ function setupSplitter() {
   const textSize = () => (body.style.zoom = String(settings.panelTextPx / DEFS.panelTextPx.default))
   textSize()
   onSettingsChange((changed) => changed.includes('panelTextPx') && textSize())
+  // The map's hover card: sized in em from this (style.css .file-tip).
+  const tipSize = () => document.documentElement.style.setProperty('--tip-px', `${settings.tipTextPx}px`)
+  tipSize()
+  onSettingsChange((changed) => changed.includes('tipTextPx') && tipSize())
   splitter.setAttribute('aria-valuemin', String(PANEL_MIN))
 
   splitter.addEventListener('pointerdown', (e) => {
@@ -205,9 +209,9 @@ async function route() {
     current = null
     renderRepoPicker()
     renderBranchPicker()
-    return panelMessage(`<h2>No repos yet</h2><p>Run <code>semantic-zoom</code> in a repo, or add one here.</p>${addRepoButton}`)
+    return panelMessage(`<h2>No repos yet</h2><p>Run <code>flyover</code> in a repo, or add one here.</p>${addRepoButton}`)
   }
-  // A repo added since the list was read (`semantic-zoom` in a terminal, or a script): read the list again.
+  // A repo added since the list was read (`flyover` in a terminal, or a script): read the list again.
   if (p.get('repo') && !repos.some((r) => r.id === p.get('repo'))) {
     try {
       repos = await api<Repo[]>('/api/repos')
@@ -256,7 +260,7 @@ async function route() {
 }
 
 /**
- * A review or descriptions saved since the panel was drawn (`semantic-zoom import`, from a Claude Code session): shown
+ * A review or descriptions saved since the panel was drawn (`flyover import`, from a Claude Code session): shown
  * at once, without making the map again: your zoom and selection stay. Returns whether anything changed.
  */
 async function showNewlySaved(): Promise<boolean> {
@@ -357,7 +361,7 @@ const showOptions = () => Object.fromEntries(SHOW_KEYS.map((k) => [k, settings[k
 function settingsChanged(changed: SettingKey[]) {
   const show = changed.filter((k) => (SHOW_KEYS as readonly string[]).includes(k))
   if (show.length) map.setOptions(showOptions())
-  const rest = changed.filter((k) => !show.includes(k) && k !== 'panelWidth' && k !== 'panelTextPx')
+  const rest = changed.filter((k) => !show.includes(k) && k !== 'panelWidth' && k !== 'panelTextPx' && k !== 'tipTextPx')
   if (rest.length) map.settingsChanged(rest, rest.some((k) => LAYOUT_KEYS.includes(k)))
   if (changed.includes('liveCheckSeconds')) startLiveChecks()
 }
@@ -430,7 +434,8 @@ async function main() {
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement) return
     if (e.key === 'Escape') {
-      // Drops the selection; the view stays where it is (Whole map resets it).
+      // Closes an opened tooltip and drops the selection; the view stays where it is (Whole map resets it).
+      map.hideTip()
       map.clearSelection()
       setActive(-1)
       document.querySelectorAll('.change.active').forEach((x) => x.classList.remove('active'))
@@ -520,7 +525,7 @@ function changeFiles(i: number): string[] {
 function changesHtml() {
   const cs = analysis.changes
   if (!cs)
-    return `<section><h2>What changed</h2><p class="none">No AI descriptions for this branch. In a Claude Code session in this repo, run <code>/zoom-review</code>; they appear here when you come back.</p></section>`
+    return `<section><h2>What changed</h2><p class="none">No AI descriptions for this branch. In a Claude Code session in this repo, run <code>/flyover-review</code>; they appear here when you come back.</p></section>`
   const items = cs.items
     .map(
       (c, i) => `<li class="change" data-i="${i}"><div class="ct"><span class="n">${i + 1}</span>${esc(c.title)}</div><div class="cs">${esc(c.summary)}</div><div class="cf">${c.files.length} file${c.files.length === 1 ? '' : 's'} · ${c.hunks.length} hunk${c.hunks.length === 1 ? '' : 's'}</div></li>`,
@@ -529,7 +534,7 @@ function changesHtml() {
   const gap = cs.undescribed.length
     ? `<li class="change gap" data-i="-1"><div class="ct"><span class="n">!</span>Not described: ${cs.undescribed.length} hunk${cs.undescribed.length === 1 ? '' : 's'}</div><div class="cs">No description covers these. Read them yourself.</div><ul class="ev">${cs.undescribed.slice(0, 12).map((h) => `<li><code>${esc(h)}</code></li>`).join('')}</ul></li>`
     : ''
-  const stale = cs.headSha !== analysis.headSha ? `<p class="none">These describe an older commit of the branch. Run <code>/zoom-review</code> again for the new one.</p>` : ''
+  const stale = cs.headSha !== analysis.headSha ? `<p class="none">These describe an older commit of the branch. Run <code>/flyover-review</code> again for the new one.</p>` : ''
   const invalid = cs.invalid.length ? `<div class="hint">${cs.invalid.length} hunk id${cs.invalid.length === 1 ? '' : 's'} the model cited didn't exist and were dropped.</div>` : ''
   return `<section>
       <h2>What changed <span class="tag ai" title="Written by ${esc(cs.by)} from the diff. Every source hunk is either in a change or listed as not described.">AI-written</span></h2>
@@ -559,10 +564,10 @@ function chip(sev: string, n: number, ai = false) {
 const reviewCount = () => analysis.review?.findings.length ?? 0
 const allFindings = (): Finding[] => [...(analysis.review?.findings ?? []), ...analysis.findings]
 
-/** An outside AI's review (`semantic-zoom import`, the /zoom-review skill), kept apart from the analyzer's findings. */
+/** An outside AI's review (`flyover import`, the /flyover-review skill), kept apart from the analyzer's findings. */
 function reviewHtml() {
   const r = analysis.review
-  if (!r) return `<section><h2>AI review</h2><p class="none">None yet. In a Claude Code session in this repo, run <code>/zoom-review</code>; it appears here when you come back.</p></section>`
+  if (!r) return `<section><h2>AI review</h2><p class="none">None yet. In a Claude Code session in this repo, run <code>/flyover-review</code>; it appears here when you come back.</p></section>`
   const count = (sev: string) => r.findings.filter((f) => f.severity === sev).length
   const stale = r.headSha !== analysis.headSha ? `<p class="none">This reviews an older commit of the branch (${esc(r.headSha.slice(0, 7))}).</p>` : ''
   const unknown = r.unknownPaths.length ? `<p class="none">It also named paths that aren't on the map: ${r.unknownPaths.map((p) => `<code>${esc(p)}</code>`).join(', ')}</p>` : ''

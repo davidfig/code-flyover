@@ -1,4 +1,4 @@
-// The intended architecture: the repo's own .semantic-zoom.json (read from the base commit, so a branch can't loosen
+// The intended architecture: the repo's own .code-flyover.json (read from the base commit, so a branch can't loosen
 // the rules it's checked against), else models/<repo>.json here, else inferred from the repo's layout (workspace
 // folders and top-level folders).
 
@@ -24,7 +24,9 @@ export interface LoadedModel {
 const GROUP_DIRS = new Set(['crates', 'packages', 'apps', 'libs', 'services'])
 
 /** The architecture model's file name at an analyzed repo's root. */
-export const REPO_MODEL_FILE = '.semantic-zoom.json'
+export const REPO_MODEL_FILE = '.code-flyover.json'
+/** Its name before the app became Code Flyover: still read when a repo has no REPO_MODEL_FILE. */
+export const OLD_REPO_MODEL_FILE = '.semantic-zoom.json'
 
 /** `repoModel`: the text of the repo's own REPO_MODEL_FILE at the base commit, if it has one. */
 export function loadModel(modelsDir: string, repoName: string, files: string[], repoModel?: string): LoadedModel {

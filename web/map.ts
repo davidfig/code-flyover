@@ -236,6 +236,8 @@ export class ZoomMap {
   private tip = document.createElement('div')
   private tipFor: MapNode | null = null
   private tipTimer = 0
+  /** Opened by a click: it stays (hovering elsewhere doesn't close it) until another click, Esc or the map moves. */
+  private tipPinned = false
   private changesLayer: HTMLElement
   private cards: ChangeCard[] = []
   /** whether placeCards has run for this layout and whole-map zoom */
@@ -312,6 +314,12 @@ export class ZoomMap {
         this.schedule()
       },
       click: (x, y, double) => {
+        // A click on a name opens what there is to say about it, and doesn't select the box under the name.
+        if (!double) {
+          const label = this.labelAt(x, y)
+          if (label) return this.clickLabel(label)
+          if (this.tipPinned) this.hideTip() // a click anywhere else closes an opened tooltip
+        }
         if (!double && this.clickText(x, y)) return // a gap bar's button in the selected file's text
         const w = this.camera.toWorld(x, y)
         const n = this.hit(w.x, w.y)
@@ -875,32 +883,52 @@ export class ZoomMap {
     return `<div class="tp">${esc(n.path)}/</div><div class="ta">${esc(about)}</div><div class="tw">AI-written${stale}</div>`
   }
 
-  /** The pointer is at (x, y) CSS px: over a label with something to say, its tooltip shows after a moment. */
-  private hoverLabel(x: number, y: number) {
-    // The innermost label under the pointer (they're drawn outermost first; a nested one sits over its parent's box).
+  /** The innermost label at (x, y) CSS px (they're drawn outermost first; a nested one sits over its parent's box). */
+  private labelAt(x: number, y: number) {
     let hit: (typeof this.labelHits)[number] | undefined
     for (const b of this.labelHits) if (x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1) hit = b
+    return hit
+  }
+
+  /** The pointer is at (x, y) CSS px: over a label with something to say, its tooltip shows after a moment. */
+  private hoverLabel(x: number, y: number) {
+    if (this.tipPinned) return
+    const hit = this.labelAt(x, y)
     const html = hit ? this.tipHtml(hit.node) : null
     if (!hit || !html) return this.hideTip()
     if (this.tipFor === hit.node) return
     this.hideTip()
     this.tipFor = hit.node
-    const at = hit
-    this.tipTimer = window.setTimeout(() => {
-      this.tip.innerHTML = html
-      this.tip.hidden = false
-      // Below the label, kept inside the map.
-      const w = this.tip.offsetWidth
-      const left = Math.min(Math.max(4, at.x0), this.host.clientWidth - w - 4)
-      const below = at.y1 + 4
-      const top = below + this.tip.offsetHeight > this.host.clientHeight - 4 ? Math.max(4, at.y0 - this.tip.offsetHeight - 4) : below
-      this.tip.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`
-    }, TIP_DELAY_MS)
+    this.tipTimer = window.setTimeout(() => this.showTip(hit, html), TIP_DELAY_MS)
   }
 
-  private hideTip() {
+  /** A click on a name: its tooltip opens at once and stays; a second click on the same name closes it. */
+  private clickLabel(hit: (typeof this.labelHits)[number]) {
+    const again = this.tipPinned && this.tipFor === hit.node
+    this.hideTip()
+    const html = this.tipHtml(hit.node)
+    if (again || !html) return
+    this.tipFor = hit.node
+    this.tipPinned = true
+    this.showTip(hit, html)
+  }
+
+  private showTip(at: (typeof this.labelHits)[number], html: string) {
+    this.tip.innerHTML = html
+    this.tip.hidden = false
+    // Below the label, kept inside the map.
+    const w = this.tip.offsetWidth
+    const left = Math.min(Math.max(4, at.x0), this.host.clientWidth - w - 4)
+    const below = at.y1 + 4
+    const top = below + this.tip.offsetHeight > this.host.clientHeight - 4 ? Math.max(4, at.y0 - this.tip.offsetHeight - 4) : below
+    this.tip.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`
+  }
+
+  /** Closes the tooltip (Esc, or the map moved). */
+  hideTip() {
     clearTimeout(this.tipTimer)
     this.tipFor = null
+    this.tipPinned = false
     this.tip.hidden = true
   }
 

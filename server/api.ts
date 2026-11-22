@@ -1,6 +1,6 @@
 // The app's local API: which repos you've added, their branches, analyses made on demand, and the AI change
-// descriptions and reviews an outside AI saved (`semantic-zoom import`). It never calls a model. Served by Vite (vite.config.ts), both for `npm run dev` and for
-// the `semantic-zoom` command (bin/semantic-zoom.mjs). Everything is read from git commits on this machine.
+// descriptions and reviews an outside AI saved (`flyover import`). It never calls a model. Served by Vite (vite.config.ts), both for `npm run dev` and for
+// the `flyover` command (bin/flyover.mjs). Everything is read from git commits on this machine.
 //
 // GET    /api/repos                                   the repos you've added
 // POST   /api/repos      { path }                     add one (any folder inside a git repo)
@@ -11,12 +11,12 @@
 // GET    /api/commits?repo=<id>&head=<ref>&base=<ref>  the commits the analysis would read now (the page checks for new ones)
 // POST   /api/log        { message }                  the page's uncaught errors, printed to the server's output
 // GET    /api/settings                                the settings every window shares (web/settingsStore.ts), or null
-// PUT    /api/settings   { semanticZoomSettings, settings }  saves them
+// PUT    /api/settings   { codeFlyoverSettings, settings }  saves them
 // POST   /api/settings/export?path=<file.json>        writes the body (an exported settings file) where the save panel said
 //
-// State lives in ~/.semantic-zoom: repos.json, settings.json, descriptions/<repo id>/<head>..<base>.json and reviews/<repo id>/<head>..<base>.json
+// State lives in ~/.code-flyover: repos.json, settings.json, descriptions/<repo id>/<head>..<base>.json and reviews/<repo id>/<head>..<base>.json
 // (AI-written, so they're kept; analyses take about a second, so they're only kept in memory). Descriptions and
-// reviews can also come from an outside AI, through `semantic-zoom export` and `import` (server/review-cli.ts).
+// reviews can also come from an outside AI, through `flyover export` and `import` (server/review-cli.ts).
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -50,7 +50,18 @@ export interface Branch {
   dirty?: boolean
 }
 
-const STATE = path.join(os.homedir(), '.semantic-zoom')
+const STATE = path.join(os.homedir(), '.code-flyover')
+// The app was called Semantic Zoom and kept its state in ~/.semantic-zoom: move over whatever the new folder lacks,
+// then remove the old one once it's empty.
+const OLD_STATE = path.join(os.homedir(), '.semantic-zoom')
+if (fs.existsSync(OLD_STATE)) {
+  fs.mkdirSync(STATE, { recursive: true })
+  for (const name of fs.readdirSync(OLD_STATE)) {
+    const to = path.join(STATE, name)
+    if (!fs.existsSync(to)) fs.renameSync(path.join(OLD_STATE, name), to)
+  }
+  if (fs.readdirSync(OLD_STATE).length === 0) fs.rmdirSync(OLD_STATE)
+}
 const REPOS_FILE = path.join(STATE, 'repos.json')
 const SETTINGS_FILE = path.join(STATE, 'settings.json')
 const DESCRIPTIONS = path.join(STATE, 'descriptions')
@@ -233,12 +244,12 @@ export function analysisFor(repo: Repo, head: string, base: string): Analysis {
   return { ...a, changes: savedDescriptions(repo, head, base), review: savedReview(repo, head, base) }
 }
 
-/** Saves descriptions an outside AI wrote (`semantic-zoom import`) where the app looks for them. */
+/** Saves descriptions an outside AI wrote (`flyover import`) where the app looks for them. */
 export function saveDescriptions(repoPath: string, head: string, base: string, cs: ChangeSet) {
   writeJson(descriptionFile(addRepo(repoPath), head, base), cs)
 }
 
-/** Saves an outside AI's review (`semantic-zoom import`) where the app looks for it. */
+/** Saves an outside AI's review (`flyover import`) where the app looks for it. */
 export function saveReview(repoPath: string, head: string, base: string, review: Review) {
   writeJson(reviewFile(addRepo(repoPath), head, base), review)
 }

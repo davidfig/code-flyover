@@ -94,7 +94,7 @@ export interface Finding {
   /** supporting evidence: import lines, file paths */
   evidence?: string[]
   target?: FindingTarget
-  /** who wrote it, when an AI reviewer did (imported with `semantic-zoom import`); absent for the analyzer's own */
+  /** who wrote it, when an AI reviewer did (imported with `flyover import`); absent for the analyzer's own */
   by?: string
 }
 
@@ -120,11 +120,11 @@ export interface Analysis {
   changes?: ChangeSet
   /** the worktree whose uncommitted changes are included (the head is a snapshot of its files: analyzer/git.ts) */
   uncommitted?: string
-  /** an outside AI's review of the branch (`semantic-zoom import`): its findings, kept apart from the analyzer's */
+  /** an outside AI's review of the branch (`flyover import`): its findings, kept apart from the analyzer's */
   review?: Review
 }
 
-/** An AI review written outside the app (say, in a Claude Code session) and imported with `semantic-zoom import`. */
+/** An AI review written outside the app (say, in a Claude Code session) and imported with `flyover import`. */
 export interface Review {
   by: string
   generatedAt: string

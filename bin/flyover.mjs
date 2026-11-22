@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// semantic-zoom [folder]: opens the app on a repo's branches.
-// semantic-zoom --serve:   only starts the server (the desktop app runs this, src-tauri/src/lib.rs).
-// semantic-zoom export …:  what an outside AI needs to describe and review a branch (server/review-cli.ts)
-// semantic-zoom import …:  saves what it wrote, for the app to show
+// flyover [folder]: opens the app on a repo's branches.
+// flyover --serve:   only starts the server (the desktop app runs this, src-tauri/src/lib.rs).
+// flyover export …:  what an outside AI needs to describe and review a branch (server/review-cli.ts)
+// flyover import …:  saves what it wrote, for the app to show
 //
 // Adds the git repo at [folder] (default: the current folder) to the app's list and opens it in the browser. Starts
 // the app's server on http://localhost:5197 first if it isn't running yet, and keeps it running (Ctrl-C stops it);
@@ -23,7 +23,7 @@ if (process.argv[2] === 'export' || process.argv[2] === 'import') {
   process.exit(r.status ?? 1)
 }
 
-const PORT = Number(process.env.SEMANTIC_ZOOM_PORT ?? 5197)
+const PORT = Number(process.env.FLYOVER_PORT ?? 5197)
 const origin = `http://localhost:${PORT}`
 const serveOnly = process.argv[2] === '--serve'
 const folder = path.resolve((!serveOnly && process.argv[2]) || process.cwd())
@@ -46,7 +46,7 @@ if (!alreadyRunning) {
   const { createServer } = await import('vite')
   const server = await createServer({ root: appDir, configFile: path.join(appDir, 'vite.config.ts'), server: { port: PORT, strictPort: true, open: false }, logLevel: 'warn' })
   await server.listen()
-  console.log(`Semantic Zoom is running at ${origin}/ (Ctrl-C to stop)`)
+  console.log(`Code Flyover is running at ${origin}/ (Ctrl-C to stop)`)
 }
 
 if (serveOnly) {

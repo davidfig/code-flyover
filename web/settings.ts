@@ -4,7 +4,7 @@
 //
 // No page code, so the text layout worker imports it too: the page posts it the values (text/worker.ts) and both read
 // `settings` at the moment they need a value. Stored and imported/exported by settingsStore.ts, as JSON:
-//   { "semanticZoomSettings": 1, "settings": { "codeColumns": 100, … } }
+//   { "codeFlyoverSettings": 1, "settings": { "codeColumns": 100, … } }
 
 export type SettingGroup = 'Code' | 'Map' | 'Zoom and mouse' | 'Window'
 export const GROUPS: SettingGroup[] = ['Code', 'Map', 'Zoom and mouse', 'Window']
@@ -57,8 +57,9 @@ export const DEFS = {
   doubleClickMs: num('Zoom and mouse', 'Double-click speed', 'The longest gap between two clicks that still counts as a double click.', 400, 50, 25, 'ms'),
 
   // Window
-  panelTextPx: num('Window', 'Side panel text size', 'The size of the side panel’s body text. Headings, tags and code in it grow and shrink with it.', 13, 8, 1, 'px'),
   panelWidth: num('Window', 'Side panel width', 'Dragging the divider sets this too; double-clicking it puts it back to the default.', 400, 260, 10, 'px'),
+  panelTextPx: num('Window', 'Side panel text size', 'The size of the side panel’s body text. Headings, tags and code in it grow and shrink with it.', 13, 8, 1, 'px'),
+  tipTextPx: num('Window', 'Hover card text size', 'The size of the text in the card that shows when you hover over a file or folder on the map.', 12, 8, 1, 'px'),
   liveCheckSeconds: num('Window', 'Check for new commits every', 'How often the open branch is checked for new commits and newly saved reviews while the window is in front.', 4, 1, 1, 's'),
 } satisfies Record<string, SettingDef>
 

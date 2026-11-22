@@ -1,13 +1,13 @@
 // Lets an outside AI (a Claude Code session, say) write what the app shows: the change descriptions and a review.
 //
-// semantic-zoom export [folder] [--head <branch>] [--base <ref>]
+// flyover export [folder] [--head <branch>] [--base <ref>]
 //   Prints what the AI needs: the instructions, the JSON to write, the branch's numbered hunks and the paths it may
 //   point at. The head defaults to the folder's checked-out branch, the base to the repo's default branch.
-// semantic-zoom import <file.json> [folder]
+// flyover import <file.json> [folder]
 //   Checks that file against the code (hunk ids, coverage, paths, the head commit) and saves it where the app looks
-//   (~/.semantic-zoom, server/api.ts). The app shows it within a few seconds (web/main.ts, showNewlySaved).
+//   (~/.code-flyover, server/api.ts). The app shows it within a few seconds (web/main.ts, showNewlySaved).
 //
-// Run through bin/semantic-zoom.mjs, which hands these two commands to tsx.
+// Run through bin/flyover.mjs, which hands these two commands to tsx.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -146,11 +146,11 @@ function exportInput() {
     folders: [{ path: foldersToDescribe(a)[0] ?? 'path/to', about: '…' }],
   }
   const out = [
-    `# Semantic Zoom: review input for ${a.repo}, ${head} against ${base}`,
+    `# Code Flyover: review input for ${a.repo}, ${head} against ${base}`,
     '',
     a.uncommitted
-      ? `This includes the uncommitted changes in ${a.uncommitted}, as a snapshot of its files (headSha ${a.headSha}; no branch points at it). If those files change before you import, the import says so: export again. Write one JSON file, then run \`semantic-zoom import <file>\` in the repo (or pass the repo's folder after the file).`
-      : `Head commit ${a.headSha}. Write one JSON file, then run \`semantic-zoom import <file>\` in the repo (or pass the repo's folder after the file).`,
+      ? `This includes the uncommitted changes in ${a.uncommitted}, as a snapshot of its files (headSha ${a.headSha}; no branch points at it). If those files change before you import, the import says so: export again. Write one JSON file, then run \`flyover import <file>\` in the repo (or pass the repo's folder after the file).`
+      : `Head commit ${a.headSha}. Write one JSON file, then run \`flyover import <file>\` in the repo (or pass the repo's folder after the file).`,
     'The import checks the file against this commit and tells you what it dropped; fix the file and import again until it reports nothing dropped.',
     '',
     '## The file to write',
@@ -226,19 +226,19 @@ function exportInput() {
 
 function importReview() {
   const [fileArg, folderArg] = args
-  if (!fileArg) fail('usage: semantic-zoom import <file.json> [repo folder]')
+  if (!fileArg) fail('usage: flyover import <file.json> [repo folder]')
   let file: ReviewFile
   try {
     file = JSON.parse(fs.readFileSync(path.resolve(fileArg), 'utf8'))
   } catch (e) {
     fail(`Couldn't read ${fileArg}: ${e instanceof Error ? e.message : e}`)
   }
-  for (const k of ['by', 'head', 'base', 'headSha'] as const) if (typeof file[k] !== 'string' || !file[k]) fail(`${fileArg} needs "${k}" (copy it from \`semantic-zoom export\`)`)
+  for (const k of ['by', 'head', 'base', 'headSha'] as const) if (typeof file[k] !== 'string' || !file[k]) fail(`${fileArg} needs "${k}" (copy it from \`flyover export\`)`)
   if (!file.changes && !file.findings && !file.files && !file.folders) fail(`${fileArg} has none of "changes", "findings", "files" or "folders"`)
   const folder = path.resolve(folderArg ?? process.cwd())
   const a = load(folder, file.head, file.base)
   if (a.headSha !== file.headSha)
-    fail(`${file.head} ${a.uncommitted ? 'or its uncommitted files have' : 'has'} changed since the file was written (${file.headSha.slice(0, 10)}, now ${a.headSha.slice(0, 10)}). Hunk numbers may have moved: run \`semantic-zoom export\` again and redo the file.`)
+    fail(`${file.head} ${a.uncommitted ? 'or its uncommitted files have' : 'has'} changed since the file was written (${file.headSha.slice(0, 10)}, now ${a.headSha.slice(0, 10)}). Hunk numbers may have moved: run \`flyover export\` again and redo the file.`)
 
   if (file.changes) {
     if (!Array.isArray(file.changes)) fail('"changes" must be a list')
@@ -323,4 +323,4 @@ function importReview() {
 const command = args.shift()
 if (command === 'export') exportInput()
 else if (command === 'import') importReview()
-else fail('usage: semantic-zoom export [folder] [--head <branch>] [--base <ref>] | semantic-zoom import <file.json> [folder]')
+else fail('usage: flyover export [folder] [--head <branch>] [--base <ref>] | flyover import <file.json> [folder]')

@@ -1,5 +1,5 @@
 // Prints a branch's analysis in the terminal, with any change descriptions an outside AI saved for it
-// (`semantic-zoom import`). The app itself analyzes on demand: run `semantic-zoom` to open it. Never calls a model.
+// (`flyover import`). The app itself analyzes on demand: run `flyover` to open it. Never calls a model.
 //
 // Usage: npm run analyze -- <repo path> <head branch> [base, default the remote's default branch] [--id <name>]
 // --id <name>     name the analysis (default: <repo>--<head>)
@@ -38,6 +38,6 @@ if (a.changes) {
   if (a.changes.undescribed.length) console.log(`  ! ${a.changes.undescribed.length} hunks not described`)
   if (a.changes.invalid.length) console.log(`  ! ${a.changes.invalid.length} cited hunk ids don't exist`)
 }
-if (!a.changes) console.log('no change descriptions (run /zoom-review in a Claude Code session to write them)')
-else if (a.changes.headSha !== a.headSha) console.log('the saved change descriptions are for an older commit: run /zoom-review again')
+if (!a.changes) console.log('no change descriptions (run /flyover-review in a Claude Code session to write them)')
+else if (a.changes.headSha !== a.headSha) console.log('the saved change descriptions are for an older commit: run /flyover-review again')
 console.log(`done in ${((Date.now() - started) / 1000).toFixed(1)}s`)

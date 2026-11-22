@@ -117,11 +117,11 @@ export const UNCOMMITTED = 'Uncommitted changes'
 
 /** Fixed, so a snapshot of the same files on the same commit is the same commit: its id says whether anything changed. */
 const SNAPSHOT_ENV = {
-  GIT_AUTHOR_NAME: 'Semantic Zoom',
-  GIT_AUTHOR_EMAIL: 'semantic-zoom@localhost',
+  GIT_AUTHOR_NAME: 'Code Flyover',
+  GIT_AUTHOR_EMAIL: 'code-flyover@localhost',
   GIT_AUTHOR_DATE: '@0 +0000',
-  GIT_COMMITTER_NAME: 'Semantic Zoom',
-  GIT_COMMITTER_EMAIL: 'semantic-zoom@localhost',
+  GIT_COMMITTER_NAME: 'Code Flyover',
+  GIT_COMMITTER_EMAIL: 'code-flyover@localhost',
   GIT_COMMITTER_DATE: '@0 +0000',
 }
 
@@ -137,7 +137,7 @@ export function snapshot(worktree: string): string | null {
     execFileSync('git', ['-C', worktree, ...args], { encoding: 'utf8', maxBuffer: 1 << 30, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }).trim()
   // A copy of the worktree's index, so `add` only reads the files whose size or time changed.
   const own = run(['rev-parse', '--path-format=absolute', '--git-path', 'index'])
-  const index = path.join(os.tmpdir(), `semantic-zoom-index-${process.pid}-${Math.random().toString(36).slice(2)}`)
+  const index = path.join(os.tmpdir(), `code-flyover-index-${process.pid}-${Math.random().toString(36).slice(2)}`)
   try {
     if (fs.existsSync(own)) fs.copyFileSync(own, index)
     run(['add', '-A'], { GIT_INDEX_FILE: index })

@@ -1,6 +1,6 @@
 // Where the settings (settings.ts) are kept, and their import and export. One JSON document:
-//   { "semanticZoomSettings": 1, "settings": { …every setting… } }
-// It's a file, ~/.semantic-zoom/settings.json, read and written through the app's server (GET and PUT /api/settings),
+//   { "codeFlyoverSettings": 1, "settings": { …every setting… } }
+// It's a file, ~/.code-flyover/settings.json, read and written through the app's server (GET and PUT /api/settings),
 // so the desktop app and any browser tab on the server share one set of settings, and the file can be edited or backed
 // up like any other. A window picks up changes another one made when it comes to the front. Only a page with no server
 // behind it falls back to the same document in this browser's IndexedDB.
@@ -10,7 +10,7 @@ import { defaults, KEYS, onSettingsChange, settings, update, type SettingKey } f
 
 export const FORMAT_VERSION = 1
 export interface SettingsDoc {
-  semanticZoomSettings: number
+  codeFlyoverSettings: number
   settings: Record<string, unknown>
 }
 
@@ -23,14 +23,15 @@ const tauri = (window as unknown as { __TAURI__?: TauriApi }).__TAURI__
 let server = true
 
 /** Where the settings live: shown in the Settings dialog. */
-export const storageName = () => (server ? '~/.semantic-zoom/settings.json' : 'this browser’s storage (IndexedDB)')
+export const storageName = () => (server ? '~/.code-flyover/settings.json' : 'this browser’s storage (IndexedDB)')
 
 export function toDoc(): SettingsDoc {
-  return { semanticZoomSettings: FORMAT_VERSION, settings: Object.fromEntries(KEYS.map((k) => [k, settings[k]])) }
+  return { codeFlyoverSettings: FORMAT_VERSION, settings: Object.fromEntries(KEYS.map((k) => [k, settings[k]])) }
 }
 
 // ---------- IndexedDB (no server) ----------
 
+// Named before the app became Code Flyover; kept so settings already in this browser are still found.
 const DB = 'semantic-zoom'
 const STORE = 'settings'
 const DOC_KEY = 'settings'
@@ -173,13 +174,15 @@ export function importText(text: string): { changed: SettingKey[]; rejected: str
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('That file isn’t a settings file.')
   const obj = parsed as Record<string, unknown>
-  const values = 'semanticZoomSettings' in obj ? obj.settings : obj
+  // Files exported before the rename say "semanticZoomSettings".
+  const version = obj.codeFlyoverSettings ?? obj.semanticZoomSettings
+  const values = version !== undefined ? obj.settings : obj
   if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('That file has no settings in it.')
-  if (typeof obj.semanticZoomSettings === 'number' && obj.semanticZoomSettings > FORMAT_VERSION) console.warn('Settings from a newer version: reading what this one knows.')
+  if (typeof version === 'number' && version > FORMAT_VERSION) console.warn('Settings from a newer version: reading what this one knows.')
   return update(values as Record<string, unknown>)
 }
 
-const FILE_NAME = 'semantic-zoom-settings.json'
+const FILE_NAME = 'code-flyover-settings.json'
 
 /**
  * Writes the settings out: in the desktop app, to a file picked in the save panel (the server writes it); in a

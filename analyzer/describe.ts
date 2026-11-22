@@ -1,6 +1,6 @@
 // What a branch's change descriptions must be, and the check they pass, for the zoomed-out map.
 //
-// The app never calls a model. An outside AI (a Claude Code session, through `semantic-zoom export` and `import`,
+// The app never calls a model. An outside AI (a Claude Code session, through `flyover export` and `import`,
 // server/review-cli.ts) groups the branch's hunks into the distinct things it does and writes a title and a sentence
 // for each. The descriptions are only as good as their coverage, so the code checks it: every source hunk must belong to
 // a change, and anything left over is reported as "undescribed" rather than hidden. Hunk ids the AI invents are dropped
@@ -9,7 +9,7 @@
 
 import type { Analysis, Change, ChangeSet, FileInfo } from '../shared/types.ts'
 
-/** How to write the change descriptions: the rules `semantic-zoom export` gives the AI that writes them. */
+/** How to write the change descriptions: the rules `flyover export` gives the AI that writes them. */
 export const CHANGE_RULES = `The changes say what the branch does, so the reviewer knows what they're looking at before reading the code. Each one shows as a numbered card over its files on the zoomed-out map, and in the panel under "What changed".
 
 Group the hunks below into the distinct things the branch does: usually 3 to 8. A change is one thing (a feature, a fix, a refactor, a new endpoint), and it often spans several files and modules. Put every hunk id in exactly one change: a hunk left out shows as "Not described", for the reviewer to read unaided. Small incidental edits that fit nowhere go in one change titled "Small edits", which says what they are.
@@ -58,7 +58,7 @@ export function branchSummary(a: Analysis): string {
 }
 
 /**
- * Checks descriptions against the code, as `semantic-zoom import` saves them: hunk ids that don't exist are dropped and listed, and hunks no change covers are listed.
+ * Checks descriptions against the code, as `flyover import` saves them: hunk ids that don't exist are dropped and listed, and hunks no change covers are listed.
  */
 export function checkChanges(a: Analysis, changes: { title: string; summary: string; hunks: string[] }[], by: string): ChangeSet {
   const allIds = hunkIds(a)
