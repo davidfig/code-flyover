@@ -5,6 +5,7 @@ import { picker, type Picker } from './picker.ts'
 import { DEFS, LAYOUT_KEYS, onSettingsChange, settings, update, type SettingKey } from './settings.ts'
 import { loadSettings } from './settingsStore.ts'
 import { openSettings } from './settingsDialog.ts'
+import { openWhatsNew } from './whatsNew.ts'
 import { checkForUpdates, installUpdates, type TauriUpdates } from './updates.ts'
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T
@@ -484,6 +485,7 @@ async function main() {
     tauri.event.listen<string>('native-menu', ({ payload }) => {
       if (payload === 'settings') openSettings()
       else if (payload === 'check-updates') void checkForUpdates()
+      else if (payload === 'whats-new') openWhatsNew()
       else if (payload === 'open-repo') addRepo()
       else if (payload === 'whole-map') $('#fit').click()
       else if (payload === 'whole-repo') setWholeRepo(!settings.showUnchanged)

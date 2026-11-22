@@ -1,4 +1,4 @@
-//! The menu bar. The app's own items (Settings, Check for Updates, Open Repo, Whole Repo, Code, Docs, Tests, Translations, Fit Map, Update Branch) send their id to the page as the
+//! The menu bar. The app's own items (Settings, What's New, Check for Updates, Open Repo, Whole Repo, Code, Docs, Tests, Translations, Fit Map, Update Branch) send their id to the page as the
 //! `native-menu` event (lib.rs), which runs them, except Install Claude Code Skill…, which lib.rs runs itself
 //! (install.rs); the rest are system items.
 
@@ -35,7 +35,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     #[cfg(target_os = "macos")]
     {
-        // Two groups: the app's own (About, Check for Updates, Install, Settings), then the system's (Hide…, Quit). Quit stays with Hide
+        // Two groups: the app's own (About, What’s New, Check for Updates, Install, Settings), then the system's (Hide…, Quit). Quit stays with Hide
         // so it isn't alone between dividers.
         let app_menu = Submenu::with_items(
             app,
@@ -43,6 +43,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             true,
             &[
                 &PredefinedMenuItem::about(app, Some("About Code Flyover"), Some(about))?,
+                &MenuItemBuilder::with_id("whats-new", "What’s New…").build(app)?,
                 &MenuItemBuilder::with_id("check-updates", "Check for Updates…").build(app)?,
                 &MenuItemBuilder::with_id("install-skill", "Install Claude Code Skill…").build(app)?,
                 &item("settings", "Settings…", "CmdOrCtrl+,")?,
@@ -104,12 +105,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 &item("fullscreen", "Toggle Full Screen", "F11")?,
             ],
         )?;
-        // Updates, then About, as Help menus go.
+        // What's New and updates, then About, as Help menus go.
         let help = Submenu::with_items(
             app,
             "Help",
             true,
-            &[&MenuItemBuilder::with_id("check-updates", "Check for Updates…").build(app)?, &PredefinedMenuItem::about(app, Some("About Code Flyover"), Some(about))?],
+            &[
+                &MenuItemBuilder::with_id("whats-new", "What’s New…").build(app)?,
+                &MenuItemBuilder::with_id("check-updates", "Check for Updates…").build(app)?,
+                &PredefinedMenuItem::about(app, Some("About Code Flyover"), Some(about))?,
+            ],
         )?;
         Menu::with_items(app, &[&file, &edit, &view, &help])
     }

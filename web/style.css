@@ -141,6 +141,20 @@ dialog.settings::backdrop { background: rgba(43, 42, 39, 0.28); }
 .settings-button:hover { border-color: #c9c2b2; }
 .settings-button.primary { margin-left: 8px; color: white; background: var(--select); border-color: var(--select); font-weight: 600; }
 .settings-button.primary:hover { background: #1a5fd0; }
+
+/* What's New (whatsNew.ts): CHANGELOG.md in the Settings dialog's frame, one scrolling column. */
+dialog.whats-new { width: min(620px, calc(100vw - 32px)); }
+.whats-new .settings-close { margin-left: auto; }
+.whats-new-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 24px 24px; line-height: 1.5; outline: none; }
+.whats-new-body .release { padding: 14px 0 6px; border-bottom: 1px solid #ebe7dd; }
+.whats-new-body .release:last-child { border-bottom: 0; }
+.whats-new-body h3 { margin: 0 0 4px; font-size: 15px; display: flex; align-items: baseline; gap: 10px; }
+.whats-new-body time { font-size: 12px; font-weight: 400; color: var(--muted); }
+.whats-new-body h4 { margin: 12px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.whats-new-body p { margin: 6px 0; }
+.whats-new-body ul { margin: 4px 0; padding-left: 18px; }
+.whats-new-body li { margin: 4px 0; }
+.whats-new-body code { font-family: var(--mono); font-size: 12px; padding: 1px 4px; border-radius: 4px; background: #efece4; }
 @media (max-width: 620px) {
   .settings-nav { display: none; }
   .settings-row { flex-direction: column; align-items: stretch; gap: 8px; }

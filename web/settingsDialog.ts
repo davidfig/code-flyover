@@ -3,6 +3,7 @@
 // setting by name or help; Import and Export read and write the same JSON the settings are stored as.
 
 import { DEFS, GROUPS, KEYS, onSettingsChange, settings, update, type NumberDef, type SettingKey } from './settings.ts'
+import { openWhatsNew } from './whatsNew.ts'
 import { exportSettings, importText, onSaveError, resetAll, storageName } from './settingsStore.ts'
 
 let dialog: HTMLDialogElement | null = null
@@ -170,7 +171,7 @@ export function openSettings(focusKey?: SettingKey) {
   })
   navLinks.get(GROUPS[0])!.classList.add('current')
 
-  // ---- footer: where they're kept, import, export, reset ----
+  // ---- footer: where they're kept, What's New (the browser has no menu for it), import, export, reset ----
   const status = el('div', 'settings-status')
   const where = () => {
     status.className = 'settings-status'
@@ -220,11 +221,15 @@ export function openSettings(focusKey?: SettingKey) {
     const changed = resetAll()
     say(changed.length ? `${changed.length} setting${changed.length === 1 ? '' : 's'} put back to the default.` : 'Everything was already at its default.')
   })
+  const whatsNew = button('What’s New', () => {
+    d.close()
+    openWhatsNew()
+  })
   const done = button('Done', () => d.close(), 'primary')
   const left = el('div', 'settings-buttons')
   left.append(importBtn, exportBtn, resetBtn)
   const foot = el('div', 'settings-foot')
-  foot.append(status, left, done, fileInput)
+  foot.append(status, whatsNew, left, done, fileInput)
 
   const main = el('div', 'settings-main')
   main.append(nav, body)

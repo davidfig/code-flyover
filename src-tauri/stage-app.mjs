@@ -14,8 +14,9 @@ const out = path.join(here, 'app')
 
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
+// CHANGELOG.md: bundled into the page for What's New (web/whatsNew.ts).
 // skills/: the /flyover-review skill, which Install Claude Code Skill… (install.rs) copies into ~/.claude/skills.
-for (const entry of ['bin', 'server', 'analyzer', 'shared', 'skills', 'web', 'public', 'index.html', 'vite.config.ts', 'tsconfig.json']) {
+for (const entry of ['bin', 'server', 'analyzer', 'shared', 'skills', 'web', 'public', 'index.html', 'CHANGELOG.md', 'vite.config.ts', 'tsconfig.json']) {
   if (existsSync(path.join(root, entry))) cpSync(path.join(root, entry), path.join(out, entry), { recursive: true })
 }
 

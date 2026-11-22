@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Changelog — Code Flyover</title>
+<meta name="description" content="What changed in each release of Code Flyover.">
+<meta property="og:title" content="Code Flyover changelog">
+<meta property="og:url" content="https://codeflyover.app/changelog">
+<link rel="icon" href="icon.png">
+<!-- Made by scripts/changelog-page.ts from CHANGELOG.md. Edit that file, not this one. -->
+<style>
+:root{
+  --bg:#f3f0e8; --panel:#fbfaf6; --ink:#2b2a27; --muted:#6f6a5d; --line:#ddd7ca;
+  --modified:#e8a33d; --added:#3f9e64; --deleted:#c8414f; --impacted:#9fc3e3;
+  --removed:#7a6fb0; --select:#1f6feb; --teal:#2a8f8f; --code-bg:#2b2a27; --code-ink:#f3f0e8;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#1c1b19; --panel:#252420; --ink:#ece8dc; --muted:#a39e90; --line:#3a3832;
+    --impacted:#4a6f90; --code-bg:#12110f; --code-ink:#ece8dc;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--select)}
+.wrap{max-width:1080px;margin:0 auto;padding:0 16px}
+nav{display:flex;align-items:center;gap:20px;padding:18px 0}
+nav .brand{display:flex;align-items:center;gap:10px;font-weight:650;color:var(--ink);text-decoration:none;margin-right:auto}
+nav .brand img{width:28px;height:28px;border-radius:7px}
+nav a.l{color:var(--muted);text-decoration:none;font-size:15px}
+nav a.l:hover{color:var(--ink)}
+.hero{padding:56px 0 24px;text-align:center}
+h1{font-size:clamp(34px,6vw,60px);line-height:1.08;letter-spacing:-.025em;margin:0 auto 20px;max-width:16ch;font-weight:700}
+.lead{font-size:clamp(18px,2.4vw,21px);color:var(--muted);max-width:44em;margin:0 auto 30px}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-block;padding:11px 20px;border-radius:9px;font-weight:600;text-decoration:none;font-size:16px;border:1px solid var(--line)}
+.btn.p{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.btn.s{background:var(--panel);color:var(--ink)}
+.fine{font-size:14px;color:var(--muted);margin-top:14px}
+.demo{margin:0 auto;max-width:1000px}.demo video{display:block;width:100%;height:auto;border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 50px -24px rgba(0,0,0,.35);background:var(--panel)}.demo p{text-align:center;color:var(--muted);font-size:14px;margin-top:12px}
+.map{margin:44px auto 0;background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:0 18px 50px -24px rgba(0,0,0,.35)}
+.map .bar{display:flex;gap:7px;padding:11px 14px;border-bottom:1px solid var(--line);align-items:center;font:13px var(--mono);color:var(--muted)}
+.map .bar i{width:11px;height:11px;border-radius:50%;background:var(--line)}
+.map .bar span{margin-left:10px}
+.map svg{display:block;width:100%;height:auto}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;justify-content:center;padding:12px 16px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+.legend b{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+section{padding:72px 0}
+section h2{font-size:clamp(26px,4vw,36px);line-height:1.15;letter-spacing:-.02em;margin:0 0 14px}
+section .sub{color:var(--muted);max-width:42em;margin:0 0 36px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:22px}
+.card h3{margin:0 0 8px;font-size:18px}
+.card p{margin:0;color:var(--muted);font-size:16px}
+.card .dot{display:inline-block;width:12px;height:12px;border-radius:3px;margin-bottom:12px}
+.steps{counter-reset:s;display:grid;gap:14px;padding:0;list-style:none;margin:0}
+.steps li{counter-increment:s;display:flex;gap:16px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px}
+.steps li::before{content:counter(s);flex:none;width:30px;height:30px;border-radius:50%;background:var(--modified);color:#2b2a27;font-weight:700;display:grid;place-items:center}
+.steps strong{display:block}
+.steps span{color:var(--muted);font-size:16px}
+pre{background:var(--code-bg);color:var(--code-ink);border-radius:12px;padding:18px 20px;overflow-x:auto;font:14.5px/1.65 var(--mono);margin:0}
+pre .c{color:#8d887a}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center}
+.checks{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.checks li{padding-left:26px;position:relative;font-size:16px}
+.checks li::before{content:"";position:absolute;left:0;top:.55em;width:12px;height:3px;background:var(--teal);border-radius:2px}
+.checks em{font-style:normal;color:var(--muted)}
+.dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
+.dl .card.me{border-color:var(--ink)}
+.dl .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.dl .btn{padding:8px 14px;font-size:14.5px}
+.dl h3 small{font-weight:400;color:var(--muted);font-size:14px}
+footer{border-top:1px solid var(--line);padding:32px 0 48px;color:var(--muted);font-size:14px;display:flex;flex-wrap:wrap;gap:12px 24px}
+footer a{color:var(--muted)}
+footer .r{margin-left:auto}
+@media(max-width:760px){.two{grid-template-columns:1fr;gap:24px}nav a.l.hide{display:none}section{padding:52px 0}}
+
+.log{max-width:760px;padding:40px 0 72px}
+.log h1{font-size:clamp(30px,5vw,44px);margin:0 0 10px;max-width:none;text-align:left}
+.log .lead{margin:0 0 24px;text-align:left}
+.release{padding:28px 0;border-top:1px solid var(--line)}
+.release h3{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 14px;margin:0 0 8px;font-size:24px;letter-spacing:-.01em}
+.release time{font-size:15px;font-weight:400;color:var(--muted)}
+.release h4{margin:20px 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.release p{margin:8px 0}
+.release ul{margin:6px 0;padding-left:22px}
+.release li{margin:6px 0}
+.release code,.log .lead code{font:.88em var(--mono);padding:1px 5px;border-radius:5px;background:var(--panel);border:1px solid var(--line)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="brand" href="/"><img src="icon.png" alt="">Code Flyover</a>
+    <a class="l" href="/#download">Download</a>
+    <a class="l" href="https://github.com/davidfig/code-flyover">GitHub</a>
+  </nav>
+  <main class="log">
+    <h1>Changelog</h1>
+    <p class="lead">What changed in each release. The app shows the same list under <strong>What’s New</strong>, and updates itself when a new release is out.</p>
+<section class="release" id="vUnreleased"><h3>Coming next</h3>
+<h4>Added</h4>
+<ul><li>What's New, in the app menu (the Help menu on Windows and Linux) and in Settings, shows this changelog. It's part of the app, so it works offline.</li><li>A changelog page on codeflyover.app.</li></ul></section>
+<section class="release" id="v0.1.1"><h3>Version 0.1.1 <time datetime="2026-11-22">22 November 2026</time></h3>
+<h4>Added</h4>
+<ul><li>The desktop app updates itself from GitHub Releases. It checks when it starts and every six hours, downloads and verifies a signed update in the background, then offers <strong>Restart to update</strong>. Nothing installs until you click it. <strong>Check for Updates…</strong> in the menu checks now.</li><li><strong>Install Claude Code Skill…</strong> in the menu installs the <code>/flyover-review</code> and <code>/flyover-describe</code> skills and a <code>flyover</code> command, for when only the app is installed.</li><li><code>/flyover-describe</code> writes a sentence for every file and folder in a repo, shown when you hover its name on the map, on any branch. Notes are tied to file contents, so a rerun only redoes what changed.</li></ul>
+<h4>Changed</h4>
+<ul><li>Work on the map, highlighting, settings and the review command.</li></ul></section>
+<section class="release" id="v0.1.0"><h3>Version 0.1.0 <time datetime="2026-11-22">22 November 2026</time></h3>
+<p>The first release, as Code Flyover (it began as Semantic Zoom).</p>
+<h4>Added</h4>
+<ul><li><strong>A map of the branch.</strong> Changed files as columns of GitHub-style diffs, grouped by folder and module, on a map you zoom from the whole architecture down to the lines. Diff text is drawn on the GPU and stays smooth at every zoom.</li><li><strong>Whole repo</strong> shows every file, with the change in place; <strong>Show</strong> picks code, docs, tests and translations.</li><li><strong>Imports.</strong> Click a file or folder to see what it imports and what imports it. New, removed and forbidden imports are drawn on the map, and files that import a changed file are marked.</li><li><strong>Uncommitted work</strong> is shown with the branch, read through an index of the app's own, so your folder, index and branches are never touched.</li><li><strong>Live view.</strong> The map follows the branch: new commits and newly saved reviews show by themselves.</li><li><strong>AI review from a Claude Code session.</strong> <code>/flyover-review</code> writes change descriptions, two lines per changed file and a sentence per folder, plus bug findings, and the map shows them. The app never calls a model itself.</li><li><strong>Settings</strong>, with a filter, Import and Export, and a way back to each default.</li><li><strong>Desktop app</strong> for macOS, Windows and Linux, with native menus and a folder picker for Open Repo.</li></ul></section>
+  </main>
+  <footer>
+    <span>© 2026 David Figatner · MIT licensed</span>
+    <a href="https://github.com/davidfig/code-flyover">GitHub</a>
+    <a href="/changelog">Changelog</a>
+    <span class="r">codeflyover.app</span>
+  </footer>
+</div>
+</body>
+</html>

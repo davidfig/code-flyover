@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "analyze": "tsx analyzer/cli.ts",
     "app": "node bin/flyover.mjs",
-    "deploy:site": "cf deploy ./site"
+    "changelog:site": "tsx scripts/changelog-page.ts",
+    "deploy:site": "npm run changelog:site && cf deploy ./site"
   },
   "license": "MIT",
   "repository": "github:davidfig/code-flyover",
