@@ -94,6 +94,8 @@ export interface Finding {
   /** supporting evidence: import lines, file paths */
   evidence?: string[]
   target?: FindingTarget
+  /** who wrote it, when an AI reviewer did (imported with `semantic-zoom import`); absent for the analyzer's own */
+  by?: string
 }
 
 export interface Analysis {
@@ -116,6 +118,19 @@ export interface Analysis {
   otherChanges: { path: string; status: FileStatus; add: number; del: number }[]
   /** what the branch does, in words, for the zoomed-out map (AI-written; absent if not generated) */
   changes?: ChangeSet
+  /** an outside AI's review of the branch (`semantic-zoom import`): its findings, kept apart from the analyzer's */
+  review?: Review
+}
+
+/** An AI review written outside the app (say, in a Claude Code session) and imported with `semantic-zoom import`. */
+export interface Review {
+  by: string
+  generatedAt: string
+  /** the head commit it reviewed */
+  headSha: string
+  findings: Finding[]
+  /** paths its findings named that aren't on the map (dropped from the findings' targets) */
+  unknownPaths: string[]
 }
 
 /** A hunk's id: "<path>#<1-based hunk number>". */
@@ -129,8 +144,6 @@ export interface Change {
   files: string[]
 }
 
-/** The model that writes change descriptions by default (analyzer/describe.ts; the panel's Describe button names it). */
-export const DESCRIBE_MODEL = 'claude-sonnet-5-5'
 
 export interface ChangeSet {
   /** who wrote the descriptions: the model id */

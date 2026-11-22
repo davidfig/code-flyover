@@ -1,17 +1,18 @@
-// The app's local API: which repos you've added, their branches, analyses made on demand, and AI change
-// descriptions written only when you press Describe. Served by Vite (vite.config.ts), both for `npm run dev` and for
+// The app's local API: which repos you've added, their branches, analyses made on demand, and the AI change
+// descriptions and reviews an outside AI saved (`semantic-zoom import`). It never calls a model. Served by Vite (vite.config.ts), both for `npm run dev` and for
 // the `semantic-zoom` command (bin/semantic-zoom.mjs). Everything is read from git commits on this machine.
 //
 // GET    /api/repos                                   the repos you've added
 // POST   /api/repos      { path }                     add one (any folder inside a git repo)
 // DELETE /api/repos?repo=<id>                         forget one (nothing in the repo is touched)
 // GET    /api/branches?repo=<id>                      its local branches, newest first, and the default base
-// GET    /api/analysis?repo=<id>&head=<ref>&base=<ref> the analysis (made now, or from memory), with saved descriptions
-// POST   /api/describe   { repo, head, base }         write the descriptions (one Claude API call) and save them
+// GET    /api/analysis?repo=<id>&head=<ref>&base=<ref> the analysis (made now, or from memory), with saved descriptions and review
+// GET    /api/saved?repo=<id>&head=<ref>&base=<ref>    when its descriptions and review were saved (the page checks on focus)
 // POST   /api/log        { message }                  the page's uncaught errors, printed to the server's output
 //
-// State lives in ~/.semantic-zoom: repos.json, and descriptions/<repo id>/<head>..<base>.json (they cost money, so
-// they're kept; analyses take about a second, so they're only kept in memory).
+// State lives in ~/.semantic-zoom: repos.json, descriptions/<repo id>/<head>..<base>.json and reviews/<repo id>/<head>..<base>.json
+// (AI-written, so they're kept; analyses take about a second, so they're only kept in memory). Descriptions and
+// reviews can also come from an outside AI, through `semantic-zoom export` and `import` (server/review-cli.ts).
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -21,8 +22,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { analyze } from '../analyzer/analyze.ts'
-import { describeChanges } from '../analyzer/describe.ts'
-import type { Analysis, ChangeSet } from '../shared/types.ts'
+import type { Analysis, ChangeSet, Review } from '../shared/types.ts'
 
 export interface Repo {
   id: string
@@ -46,6 +46,7 @@ export interface Branch {
 const STATE = path.join(os.homedir(), '.semantic-zoom')
 const REPOS_FILE = path.join(STATE, 'repos.json')
 const DESCRIPTIONS = path.join(STATE, 'descriptions')
+const REVIEWS = path.join(STATE, 'reviews')
 const MODELS_DIR = fileURLToPath(new URL('../models/', import.meta.url))
 /** Branches listed with ahead/behind counts (each costs a git call): the most recent ones. */
 const MAX_BRANCHES = 60
@@ -147,18 +148,28 @@ export function branches(repo: Repo): { base: string; branches: Branch[] } {
 
 const cache = new Map<string, Analysis>()
 
-const descriptionFile = (repo: Repo, head: string, base: string) =>
-  path.join(DESCRIPTIONS, repo.id, `${encodeURIComponent(head)}..${encodeURIComponent(base)}.json`)
+const storeFile = (dir: string, repo: Repo, head: string, base: string) =>
+  path.join(dir, repo.id, `${encodeURIComponent(head)}..${encodeURIComponent(base)}.json`)
+const descriptionFile = (repo: Repo, head: string, base: string) => storeFile(DESCRIPTIONS, repo, head, base)
+const reviewFile = (repo: Repo, head: string, base: string) => storeFile(REVIEWS, repo, head, base)
 
-function savedDescriptions(repo: Repo, head: string, base: string): ChangeSet | undefined {
+function readJson<T>(file: string): T | undefined {
   try {
-    return JSON.parse(fs.readFileSync(descriptionFile(repo, head, base), 'utf8'))
+    return JSON.parse(fs.readFileSync(file, 'utf8'))
   } catch {
     return undefined
   }
 }
 
-function analysisFor(repo: Repo, head: string, base: string): Analysis {
+function writeJson(file: string, data: unknown) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(data, null, 2))
+}
+
+const savedDescriptions = (repo: Repo, head: string, base: string) => readJson<ChangeSet>(descriptionFile(repo, head, base))
+const savedReview = (repo: Repo, head: string, base: string) => readJson<Review>(reviewFile(repo, head, base))
+
+export function analysisFor(repo: Repo, head: string, base: string): Analysis {
   const headSha = tryGit(repo.path, ['rev-parse', '--verify', head + '^{commit}'])
   if (!headSha) throw new HttpError(404, `No branch or commit ${head} in ${repo.name}`)
   const baseSha = tryGit(repo.path, ['rev-parse', '--verify', base + '^{commit}'])
@@ -170,36 +181,18 @@ function analysisFor(repo: Repo, head: string, base: string): Analysis {
     cache.set(key, a)
     while (cache.size > MAX_CACHED) cache.delete(cache.keys().next().value!)
   }
-  // Saved descriptions, even for an older commit of the branch: the panel says so and offers to write them again.
-  return { ...a, changes: savedDescriptions(repo, head, base) }
+  // Saved descriptions and review, even for an older commit of the branch: the panel says so.
+  return { ...a, changes: savedDescriptions(repo, head, base), review: savedReview(repo, head, base) }
 }
 
-const describing = new Map<string, Promise<ChangeSet>>()
-
-async function describe(repo: Repo, head: string, base: string): Promise<ChangeSet> {
-  const a = analysisFor(repo, head, base)
-  const key = `${repo.id} ${a.headSha} ${a.baseSha}`
-  // One run per branch at a time: pressing again (or in another tab) waits for the same answer.
-  let job = describing.get(key)
-  if (!job) {
-    job = describeChanges(a).then((cs) => {
-      const file = descriptionFile(repo, head, base)
-      fs.mkdirSync(path.dirname(file), { recursive: true })
-      fs.writeFileSync(file, JSON.stringify(cs, null, 2))
-      return cs
-    })
-    job.finally(() => describing.delete(key)).catch(() => {})
-    describing.set(key, job)
-  }
-  return job
-}
-
-/** Saves descriptions written elsewhere (the analyzer's --describe) where the app looks for them. */
+/** Saves descriptions an outside AI wrote (`semantic-zoom import`) where the app looks for them. */
 export function saveDescriptions(repoPath: string, head: string, base: string, cs: ChangeSet) {
-  const repo = addRepo(repoPath)
-  const file = descriptionFile(repo, head, base)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(file, JSON.stringify(cs, null, 2))
+  writeJson(descriptionFile(addRepo(repoPath), head, base), cs)
+}
+
+/** Saves an outside AI's review (`semantic-zoom import`) where the app looks for it. */
+export function saveReview(repoPath: string, head: string, base: string, review: Review) {
+  writeJson(reviewFile(addRepo(repoPath), head, base), review)
 }
 
 export function loadDescriptions(repoPath: string, head: string, base: string): ChangeSet | undefined {
@@ -257,10 +250,11 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       const repo = repoById(q.get('repo'))
       return send(200, analysisFor(repo, need(q.get('head'), 'head'), need(q.get('base') ?? defaultBase(repo.path), 'base')))
     }
-    if (route === 'POST /describe') {
-      const b = await body(req)
-      const repo = repoById(need(b.repo, 'repo'))
-      return send(200, await describe(repo, need(b.head, 'head'), need(b.base, 'base')))
+    if (route === 'GET /saved') {
+      const repo = repoById(q.get('repo'))
+      const head = need(q.get('head'), 'head')
+      const base = need(q.get('base') ?? defaultBase(repo.path), 'base')
+      return send(200, { changes: savedDescriptions(repo, head, base)?.generatedAt ?? null, review: savedReview(repo, head, base)?.generatedAt ?? null })
     }
     send(404, { error: `No such API: ${route}` })
   } catch (e) {

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // semantic-zoom [folder]: opens the app on a repo's branches.
 // semantic-zoom --serve:   only starts the server (the desktop app runs this, src-tauri/src/lib.rs).
+// semantic-zoom export …:  what an outside AI needs to describe and review a branch (server/review-cli.ts)
+// semantic-zoom import …:  saves what it wrote, for the app to show
 //
 // Adds the git repo at [folder] (default: the current folder) to the app's list and opens it in the browser. Starts
 // the app's server on http://localhost:5197 first if it isn't running yet, and keeps it running (Ctrl-C stops it);
@@ -9,13 +11,20 @@
 // The server is Vite with the app's API (vite.config.ts, server/api.ts), so there's no build step: what's in this
 // checkout is what runs.
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+if (process.argv[2] === 'export' || process.argv[2] === 'import') {
+  // Run from the caller's folder, so relative paths and the checked-out branch are theirs. No server needed.
+  const tsx = path.join(appDir, 'node_modules', '.bin', 'tsx')
+  const r = spawnSync(tsx, [path.join(appDir, 'server', 'review-cli.ts'), ...process.argv.slice(2)], { stdio: 'inherit' })
+  process.exit(r.status ?? 1)
+}
+
 const PORT = Number(process.env.SEMANTIC_ZOOM_PORT ?? 5197)
 const origin = `http://localhost:${PORT}`
-const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const serveOnly = process.argv[2] === '--serve'
 const folder = path.resolve((!serveOnly && process.argv[2]) || process.cwd())
 

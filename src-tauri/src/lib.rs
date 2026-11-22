@@ -3,7 +3,7 @@
 // adds what a browser tab can't: a Dock icon, the menu bar (menu.rs), and a native folder picker for Open Repo.
 //
 // The server runs from the checkout this was built from (APP_DIR), with Node found through your login shell, so it has
-// the same PATH and environment (git, node, ANTHROPIC_API_KEY) as your terminal. It's stopped when the app quits, unless
+// the same PATH and environment (git, node) as your terminal. It's stopped when the app quits, unless
 // it was already running before (from `semantic-zoom` or another copy of the app).
 
 mod menu;
@@ -40,8 +40,8 @@ fn log_path() -> PathBuf {
     home.join(".semantic-zoom").join("app-server.log")
 }
 
-/// Starts the server through your login shell (`-l -i`: your profile and rc files, so `node`, `git` and API keys are
-/// found as in a terminal). `exec` makes node the process itself, so stopping it stops the server.
+/// Starts the server through your login shell (`-l -i`: your profile and rc files, so `node` and `git` are found as in
+/// a terminal). `exec` makes node the process itself, so stopping it stops the server.
 fn start_server() -> std::io::Result<Child> {
     let log = log_path();
     if let Some(dir) = log.parent() {

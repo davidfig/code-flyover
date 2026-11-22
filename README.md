@@ -16,7 +16,7 @@ semantic-zoom       # in any git repo (or: semantic-zoom ~/Programming/golemdocs
 
 `semantic-zoom` adds the repo to the app's list and opens http://localhost:5197/ on it, starting the app's server first if it isn't running (it stays in that terminal; Ctrl-C stops it). Pick a branch in the header: its map is made right then, in about a second, and kept in memory. Branches are listed newest first, with how far ahead of the base they are and whether they're checked out in a worktree. The side panel's **compared with** picks the base (default: the remote's default branch, e.g. `origin/main`). When you come back to the window and the branch has new commits (say from a Claude Code session), the panel offers to update the map. The repo menu also adds other repos by path and removes them from the list.
 
-Everything is read from git commits on this machine (`git ls-tree`, `git cat-file`, `git diff`), so the repo's working tree is never touched, and nothing leaves the machine except a Describe request. The app's server is Vite with a small API (`vite.config.ts`, `server/api.ts`), so there's no build step; `npm run dev` runs the same app on http://localhost:5196/ for working on it. Its state is in `~/.semantic-zoom/`: the list of repos, and saved change descriptions.
+Everything is read from git commits on this machine (`git ls-tree`, `git cat-file`, `git diff`), so the repo's working tree is never touched, and nothing leaves the machine: the app never calls a model. The app's server is Vite with a small API (`vite.config.ts`, `server/api.ts`), so there's no build step; `npm run dev` runs the same app on http://localhost:5196/ for working on it. Its state is in `~/.semantic-zoom/`: the list of repos, saved change descriptions and imported AI reviews.
 
 ### Desktop app
 
@@ -26,21 +26,26 @@ Everything is read from git commits on this machine (`git ls-tree`, `git cat-fil
 cd src-tauri && cargo tauri build --bundles app   # → src-tauri/target/release/bundle/macos/Semantic Zoom.app
 ```
 
-On launch it uses the server on port 5197 if one is running (say from `semantic-zoom`), or starts one through your login shell, so `node`, `git` and `ANTHROPIC_API_KEY` come from your shell profile as in a terminal. It stops the server it started when you quit. If the server can't start, the window shows its output (also in `~/.semantic-zoom/app-server.log`). The icon is drawn by `src-tauri/icon.mjs`; `src-tauri/icon.sh` remakes the icon files.
+On launch it uses the server on port 5197 if one is running (say from `semantic-zoom`), or starts one through your login shell, so `node` and `git` come from your shell profile as in a terminal. It stops the server it started when you quit. If the server can't start, the window shows its output (also in `~/.semantic-zoom/app-server.log`). The icon is drawn by `src-tauri/icon.mjs`; `src-tauri/icon.sh` remakes the icon files.
 
 ### Architecture model
 
 A repo's intended architecture (modules, which may import which, rules) is read from `.semantic-zoom.json` at its root, at the base commit, so a branch can't loosen the rules it's checked against; a branch that edits the file gets a warning saying so. Without one, `models/<repo name>.json` here is used, and failing that the model is inferred from the repo's folders (the base's dependencies count as intended). See `models/golemdocs.json` for the format.
 
-### Change descriptions
+### AI review from a Claude Code session
 
-The app never calls a model on its own. A branch without descriptions has a **Describe changes** button in the side panel (and **Describe again** when they're for an older commit): one Claude API call with the default model, about $0.10 a branch on Sonnet. They're saved per branch and base in `~/.semantic-zoom/descriptions/`, and the panel and the map's change cards update without reloading. They use whatever credentials the SDK finds (`ANTHROPIC_API_KEY`, or an `ant auth login` profile).
+The app never calls a model and needs no API key. The change descriptions and the AI review it shows are written by an outside AI, a Claude Code session, so a review done there lands on the map:
 
-From the terminal, `npm run analyze -- <repo> <branch> [base]` prints a branch's analysis and findings, and writes descriptions only when asked:
+```bash
+semantic-zoom export [folder] [--head <branch>] [--base <ref>] > input.md   # instructions, the JSON to write, the numbered hunks
+semantic-zoom import review.json [folder]                                    # checks it against the code and saves it
+```
 
-- `--describe`: write them (or reuse the ones saved for this head commit and model).
-- `--model <id>`: the model that writes them (implies `--describe`). Default `claude-sonnet-5-5`; `claude-haiku-5-5` is about 20× cheaper but groups less cleanly.
-- `--redescribe`: write them again even if the head commit hasn't changed (implies `--describe`).
+The JSON holds `changes` (what the branch does: a few titled groups of its hunks, shown as the map's change cards and the panel's **What changed**) and `findings` (bugs and risks, each with a severity, detail, evidence and the paths to fly to). The import drops hunk ids that don't exist, lists hunks no change covers, drops paths that aren't on the map, and refuses a file written for an older commit of the branch. Descriptions go to `~/.semantic-zoom/descriptions/`, findings to `~/.semantic-zoom/reviews/`. The panel shows the findings first, under **AI review**, tinted and labelled AI-written so they never pass for the analyzer's checks, and offers to update when a new review is saved while you're away.
+
+From the terminal, `npm run analyze -- <repo> <branch> [base]` prints a branch's analysis and findings, with any saved descriptions.
+
+The `/zoom-review` skill (`skills/zoom-review/SKILL.md`, linked into `~/.claude/skills/`) walks a Claude Code session through it: export, review, write, import.
 
 ## What changed
 

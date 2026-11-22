@@ -1,4 +1,4 @@
-import { DESCRIBE_MODEL, type Analysis, type ChangeSet, type Finding } from '../shared/types.ts'
+import type { Analysis, Finding } from '../shared/types.ts'
 import { esc, ZoomMap, type Level } from './map.ts'
 import { renderDiffView } from './diffView.ts'
 import { roleOf, type MapNode } from './layout.ts'
@@ -285,8 +285,17 @@ async function checkForNewCommits() {
   const b = branchList?.branches.find((x) => x.name === head)
   const el = document.querySelector<HTMLElement>('#newer')
   if (!el || current?.head !== head) return
-  if (b && b.sha !== analysis.headSha) {
-    el.innerHTML = `New commits on ${esc(head)} since this map was made. <button type="button">Update</button>`
+  // A review or descriptions saved since (by `semantic-zoom import`, from a Claude Code session).
+  let saved = false
+  try {
+    const q = new URLSearchParams({ repo: repo.id, head, base: current.base })
+    const s = await api<{ changes: string | null; review: string | null }>(`/api/saved?${q}`)
+    saved = s.changes !== (analysis.changes?.generatedAt ?? null) || s.review !== (analysis.review?.generatedAt ?? null)
+  } catch {}
+  if (current?.head !== head) return
+  const moved = b && b.sha !== analysis.headSha
+  if (moved || saved) {
+    el.innerHTML = `${moved ? `New commits on ${esc(head)} since this map was made.` : 'A new AI review or change descriptions were saved for this branch.'} <button type="button">Update</button>`
     el.hidden = false
     el.querySelector('button')!.onclick = () => route()
   } else el.hidden = true
@@ -372,7 +381,7 @@ async function main() {
       document.querySelectorAll('.change.active').forEach((x) => x.classList.remove('active'))
     }
     if ((e.key === 'j' || e.key === 'k') && analysis) {
-      const next = Math.max(0, Math.min(analysis.findings.length - 1, activeFinding + (e.key === 'j' ? 1 : -1)))
+      const next = Math.max(0, Math.min(allFindings().length - 1, activeFinding + (e.key === 'j' ? 1 : -1)))
       goToFinding(next)
     }
   })
@@ -403,12 +412,13 @@ function renderPanel() {
       <div class="stats"><span>${source.length} source files</span><span class="plus">+${add}</span><span class="minus">−${del}</span>${muted.length ? `<span title="Tests, translations and generated files: on the map but muted">${muted.length} tests/translations</span>` : ''}${a.otherChanges.length ? `<span>${a.otherChanges.length} other files</span>` : ''}</div>
       <details><summary>Commits</summary><ul class="commits">${commits}</ul></details>
     </section>
+    ${reviewHtml()}
     <section>
       <h2>Architecture <span class="chips">${chip('violation', count('violation'))}${chip('warning', count('warning'))}${chip('info', count('info'))}</span></h2>
       <div class="model ${a.model.kind}">Checked against ${esc(a.model.name)} <span class="tag">${a.model.kind}</span></div>
       <div class="src">${esc(a.model.source)}</div>
       ${rules ? `<details><summary>Rules</summary><ul class="rules">${rules}</ul></details>` : ''}
-      <ol class="findings">${a.findings.map((f, i) => findingHtml(f, i)).join('') || '<li class="none">Nothing stands out. The change stays inside the lines the model draws.</li>'}</ol>
+      <ol class="findings">${a.findings.map((f, i) => findingHtml(f, reviewCount() + i)).join('') || '<li class="none">Nothing stands out. The change stays inside the lines the model draws.</li>'}</ol>
       <div class="hint">j / k step through findings · double-click a box to read it · Esc clears the selection</div>
     </section>
     ${changesHtml()}
@@ -426,8 +436,6 @@ function renderPanel() {
   })
   const baseSel = document.querySelector<HTMLSelectElement>('#base')
   if (baseSel) baseSel.onchange = () => current && go(current.repo.id, current.head, baseSel.value === branchList?.base ? undefined : baseSel.value)
-  const describeBtn = document.querySelector<HTMLButtonElement>('#describe')
-  if (describeBtn) describeBtn.onclick = () => describe(describeBtn)
   activeFinding = -1
 }
 
@@ -438,38 +446,10 @@ function changeFiles(i: number): string[] {
   return [...new Set(cs.undescribed.map((h) => h.slice(0, h.lastIndexOf('#'))))]
 }
 
-/** The button that asks the dev server to write the descriptions (vite.config.ts): the only way the viewer calls a model. */
-function describeButton(label: string) {
-  return `<div class="describe"><button type="button" id="describe">${label}</button><span class="hint">One Claude API call (${esc(DESCRIBE_MODEL)}), about a minute. Saved, so it's only written once per commit.</span><div class="error" hidden></div></div>`
-}
-
-async function describe(btn: HTMLButtonElement) {
-  if (!current) return
-  const { repo, head, base } = current
-  const id = analysis.id
-  const box = btn.parentElement!
-  const error = box.querySelector<HTMLElement>('.error')!
-  btn.disabled = true
-  btn.textContent = 'Describing…'
-  error.hidden = true
-  try {
-    const cs = await api<ChangeSet>('/api/describe', { method: 'POST', body: JSON.stringify({ repo: repo.id, head, base }) })
-    if (analysis.id !== id) return // another branch was opened meanwhile: it's saved for when you come back
-    analysis.changes = cs
-    map.setChanges(analysis.changes)
-    renderPanel()
-  } catch (e) {
-    btn.disabled = false
-    btn.textContent = 'Try again'
-    error.textContent = e instanceof Error ? e.message : String(e)
-    error.hidden = false
-  }
-}
-
 function changesHtml() {
   const cs = analysis.changes
   if (!cs)
-    return `<section><h2>What changed</h2><p class="none">No AI descriptions for this branch. They're written only when you ask.</p>${describeButton('Describe changes')}</section>`
+    return `<section><h2>What changed</h2><p class="none">No AI descriptions for this branch. In a Claude Code session in this repo, run <code>/zoom-review</code>; they appear here when you come back.</p></section>`
   const items = cs.items
     .map(
       (c, i) => `<li class="change" data-i="${i}"><div class="ct"><span class="n">${i + 1}</span>${esc(c.title)}</div><div class="cs">${esc(c.summary)}</div><div class="cf">${c.files.length} file${c.files.length === 1 ? '' : 's'} · ${c.hunks.length} hunk${c.hunks.length === 1 ? '' : 's'}</div></li>`,
@@ -478,7 +458,7 @@ function changesHtml() {
   const gap = cs.undescribed.length
     ? `<li class="change gap" data-i="-1"><div class="ct"><span class="n">!</span>Not described: ${cs.undescribed.length} hunk${cs.undescribed.length === 1 ? '' : 's'}</div><div class="cs">No description covers these. Read them yourself.</div><ul class="ev">${cs.undescribed.slice(0, 12).map((h) => `<li><code>${esc(h)}</code></li>`).join('')}</ul></li>`
     : ''
-  const stale = cs.headSha !== analysis.headSha ? `<p class="none">These describe an older commit of the branch.</p>${describeButton('Describe again')}` : ''
+  const stale = cs.headSha !== analysis.headSha ? `<p class="none">These describe an older commit of the branch. Run <code>/zoom-review</code> again for the new one.</p>` : ''
   const invalid = cs.invalid.length ? `<div class="hint">${cs.invalid.length} hunk id${cs.invalid.length === 1 ? '' : 's'} the model cited didn't exist and were dropped.</div>` : ''
   return `<section>
       <h2>What changed <span class="tag ai" title="Written by ${esc(cs.by)} from the diff. Every source hunk is either in a change or listed as not described.">AI-written</span></h2>
@@ -498,13 +478,35 @@ function goToChange(i: number) {
   if (nodes.length) map.zoomTo(nodes, undefined, true)
 }
 
-function chip(sev: string, n: number) {
-  return n ? `<span class="chip ${sev}">${n} ${sev === 'violation' ? 'violation' + (n === 1 ? '' : 's') : sev === 'warning' ? 'to check' : 'notes'}</span>` : ''
+function chip(sev: string, n: number, ai = false) {
+  const plural = n === 1 ? '' : 's'
+  const word = sev === 'violation' ? (ai ? 'bug' : 'violation') + plural : sev === 'warning' ? 'to check' : 'note' + plural
+  return n ? `<span class="chip ${sev}">${n} ${word}</span>` : ''
+}
+
+/** The AI review's findings come first in the panel (and for j / k), then the analyzer's. */
+const reviewCount = () => analysis.review?.findings.length ?? 0
+const allFindings = (): Finding[] => [...(analysis.review?.findings ?? []), ...analysis.findings]
+
+/** An outside AI's review (`semantic-zoom import`, the /zoom-review skill), kept apart from the analyzer's findings. */
+function reviewHtml() {
+  const r = analysis.review
+  if (!r) return `<section><h2>AI review</h2><p class="none">None yet. In a Claude Code session in this repo, run <code>/zoom-review</code>; it appears here when you come back.</p></section>`
+  const count = (sev: string) => r.findings.filter((f) => f.severity === sev).length
+  const stale = r.headSha !== analysis.headSha ? `<p class="none">This reviews an older commit of the branch (${esc(r.headSha.slice(0, 7))}).</p>` : ''
+  const unknown = r.unknownPaths.length ? `<p class="none">It also named paths that aren't on the map: ${r.unknownPaths.map((p) => `<code>${esc(p)}</code>`).join(', ')}</p>` : ''
+  return `
+    <section>
+      <h2>AI review <span class="tag ai" title="Written by ${esc(r.by)} on ${esc(r.generatedAt.slice(0, 16).replace('T', ' '))}. A judgement, not a check: it can be wrong.">AI-written</span> <span class="chips">${chip('violation', count('violation'), true)}${chip('warning', count('warning'), true)}${chip('info', count('info'), true)}</span></h2>
+      ${stale}
+      <ol class="findings">${r.findings.map((f, i) => findingHtml(f, i)).join('') || '<li class="none">The reviewer found nothing to report.</li>'}</ol>
+      ${unknown}
+    </section>`
 }
 
 function findingHtml(f: Finding, i: number) {
   const ev = f.evidence?.length ? `<ul class="ev">${f.evidence.map((e) => `<li><code>${esc(e)}</code></li>`).join('')}</ul>` : ''
-  return `<li class="finding ${f.severity}" data-i="${i}"><div class="ft">${esc(f.title)}</div>${f.detail ? `<div class="fd">${esc(f.detail)}</div>` : ''}${ev}</li>`
+  return `<li class="finding ${f.severity}${f.by ? ' ai' : ''}" data-i="${i}"><div class="ft">${esc(f.title)}</div>${f.detail ? `<div class="fd">${esc(f.detail)}</div>` : ''}${ev}</li>`
 }
 
 function setActive(i: number) {
@@ -514,7 +516,7 @@ function setActive(i: number) {
 }
 
 function goToFinding(i: number) {
-  const f = analysis.findings[i]
+  const f = allFindings()[i]
   if (!f) return
   setActive(i)
   const targets: MapNode[] = []
