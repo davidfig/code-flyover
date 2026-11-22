@@ -1,10 +1,12 @@
-// Semantic Zoom in its own window. The app is the same web app `semantic-zoom` serves (Vite with the API in
+// Code Flyover in its own window. The app is the same web app `flyover` serves (Vite with the API in
 // server/api.ts, from this checkout): this starts that server, or uses one already running, and shows it. The window
 // adds what a browser tab can't: a Dock icon, the menu bar (menu.rs), and a native folder picker for Open Repo.
 //
-// The server runs from the checkout this was built from (APP_DIR), with Node found through your login shell, so it has
-// the same PATH and environment (git, node) as your terminal. It's stopped when the app quits, unless
-// it was already running before (from `semantic-zoom` or another copy of the app).
+// The server runs from a copy of the app's files bundled with the installer (the `app` resource, made by
+// stage-app.mjs), or from the checkout this was built from (APP_DIR) in a local build. Node and git are not bundled:
+// on macOS and Linux they're found through your login shell, so the server has the same PATH and environment as your
+// terminal; on Windows `node` is looked up on the PATH the app was started with. The server is stopped when the app
+// quits, unless it was already running before (from `flyover` or another copy of the app).
 
 mod menu;
 
@@ -17,9 +19,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, RunEvent};
 
-/// The checkout this app runs from: the folder above src-tauri.
+/// The checkout this app was built from: the folder above src-tauri. Used when no bundled copy exists (local builds).
 const APP_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
-/// The app's port, as `semantic-zoom` uses (bin/semantic-zoom.mjs).
+/// The app's port, as `flyover` uses (bin/flyover.mjs).
 const PORT: u16 = 5197;
 /// How long the server gets to answer before the window shows what went wrong.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -35,32 +37,82 @@ fn listening() -> bool {
     addrs.iter().any(|a| TcpStream::connect_timeout(a, Duration::from_millis(200)).is_ok())
 }
 
-fn log_path() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    home.join(".semantic-zoom").join("app-server.log")
+/// Where the server's files are: the bundled `app` resource if the installer has one, else the checkout.
+fn app_dir(app: &tauri::AppHandle) -> PathBuf {
+    if let Ok(res) = app.path().resource_dir() {
+        let bundled = res.join("app");
+        if bundled.join("bin").join("flyover.mjs").exists() {
+            return strip_verbatim(bundled);
+        }
+    }
+    PathBuf::from(APP_DIR)
 }
 
-/// Starts the server through your login shell (`-l -i`: your profile and rc files, so `node` and `git` are found as in
-/// a terminal). `exec` makes node the process itself, so stopping it stops the server.
-fn start_server() -> std::io::Result<Child> {
+/// Windows gives resource paths as `\\?\C:\…`, which Node and cmd can't use as a working directory.
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(rest) => PathBuf::from(rest),
+        None => p,
+    }
+}
+
+fn log_path() -> PathBuf {
+    // HOME on macOS and Linux, USERPROFILE on Windows: the same folder the server (server/api.ts) keeps its state in.
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let state = home.join(".code-flyover");
+    // Was ~/.semantic-zoom before the rename: move it, so the server (server/api.ts) finds the repo list and reviews.
+    let old = home.join(".semantic-zoom");
+    if !state.exists() && old.exists() {
+        let _ = fs::rename(&old, &state);
+    }
+    state.join("app-server.log")
+}
+
+/// Starts the server. On macOS and Linux through your login shell (`-l -i`: your profile and rc files, so `node` and
+/// `git` are found as in a terminal); `exec` makes node the process itself, so stopping it stops the server. On Windows
+/// `node` is run directly, found on the PATH the app inherited (the installers of Node and git put themselves there),
+/// without a console window.
+fn start_server(dir: &std::path::Path) -> std::io::Result<Child> {
     let log = log_path();
-    if let Some(dir) = log.parent() {
-        fs::create_dir_all(dir)?;
+    if let Some(parent) = log.parent() {
+        fs::create_dir_all(parent)?;
     }
     let out = File::create(&log)?;
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    Command::new(shell)
-        .args(["-l", "-i", "-c", "exec node bin/semantic-zoom.mjs --serve"])
-        .current_dir(APP_DIR)
-        .env("SEMANTIC_ZOOM_PORT", PORT.to_string())
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new("node");
+        c.args(["bin/flyover.mjs", "--serve"]).creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let fallback = if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" };
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| fallback.into());
+        let mut c = Command::new(shell);
+        c.args(["-l", "-i", "-c", "exec node bin/flyover.mjs --serve"]);
+        c
+    };
+    cmd.current_dir(dir)
+        .env("FLYOVER_PORT", PORT.to_string())
         .stdin(Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out)
         .spawn()
 }
 
-/// Asks the server to stop (SIGTERM, so Vite can close its own helpers) and waits briefly for it.
+/// Asks the server to stop (SIGTERM, so Vite can close its own helpers; on Windows `taskkill` of the whole tree) and
+/// waits briefly for it.
 fn stop_server(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = Command::new("taskkill").args(["/PID", &child.id().to_string(), "/T", "/F"]).creation_flags(0x0800_0000).status();
+    }
+    #[cfg(not(windows))]
     let _ = Command::new("kill").arg(child.id().to_string()).status();
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
@@ -82,9 +134,9 @@ fn connect(app: tauri::AppHandle) {
         let _ = window.eval(&format!("showError({})", serde_json_string(&text)));
     };
     if !listening() {
-        match start_server() {
+        match start_server(&app_dir(&app)) {
             Ok(child) => *app.state::<Server>().0.lock().unwrap() = Some(child),
-            Err(e) => return fail(format!("Couldn't run your shell to start the server: {e}")),
+            Err(e) => return fail(format!("Couldn't start the server (is Node.js installed?): {e}")),
         }
         let started = Instant::now();
         while !listening() {
@@ -133,8 +185,22 @@ pub fn run() {
         .manage(Server::default())
         .menu(menu::build)
         // A menu click goes to the page, which knows what each item does (web/main.ts, the `native-menu` event).
-        .on_menu_event(|app, event| {
-            let _ = app.emit("native-menu", event.id().0.clone());
+        .on_menu_event(|app, event| match event.id().0.as_str() {
+            // Windows and Linux menu items that the system items can't cover (menu.rs).
+            "quit" => app.exit(0),
+            "close-window" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.close();
+                }
+            }
+            "fullscreen" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.set_fullscreen(!w.is_fullscreen().unwrap_or(false));
+                }
+            }
+            id => {
+                let _ = app.emit("native-menu", id.to_string());
+            }
         })
         .setup(|app| {
             let handle = app.handle().clone();
@@ -142,7 +208,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building Semantic Zoom");
+        .expect("error while building Code Flyover");
     app.run(|app, event| {
         if let RunEvent::Exit = event {
             if let Some(mut child) = app.state::<Server>().0.lock().unwrap().take() {

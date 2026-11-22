@@ -4,50 +4,89 @@
 use tauri::menu::{AboutMetadata, Menu, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
 
+/// macOS keeps the usual app menu. Windows and Linux have no app menu and don't support several of the system items
+/// (Quit, Close Window, Fullscreen and Hide are unsupported on GTK 3; Fullscreen and Hide on Windows), so there
+/// those few are our own items, which lib.rs handles itself (`quit`, `close-window`, `fullscreen`).
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let item = |id: &str, label: &str, accelerator: &str| MenuItemBuilder::with_id(id, label).accelerator(accelerator).build(app);
-    let about = AboutMetadata { name: Some("Semantic Zoom".into()), ..Default::default() };
+    let about = AboutMetadata { name: Some("Code Flyover".into()), ..Default::default() };
 
-    // One group each: About, Hide and Quit read fine together, and a lone About or Quit between dividers wouldn't.
-    let app_menu = Submenu::with_items(
-        app,
-        "Semantic Zoom",
-        true,
-        &[
-            &PredefinedMenuItem::about(app, Some("About Semantic Zoom"), Some(about))?,
-            &item("settings", "Settings…", "CmdOrCtrl+,")?,
-            &PredefinedMenuItem::hide(app, None)?,
-            &PredefinedMenuItem::hide_others(app, None)?,
-            &PredefinedMenuItem::show_all(app, None)?,
-            &PredefinedMenuItem::quit(app, None)?,
-        ],
-    )?;
-    let file = Submenu::with_items(app, "File", true, &[&item("open-repo", "Open Repo…", "CmdOrCtrl+O")?, &PredefinedMenuItem::close_window(app, None)?])?;
-    // Copy and Select All have to be here for ⌘C and ⌘A to work in the page.
-    let edit = Submenu::with_items(
-        app,
-        "Edit",
-        true,
-        &[
-            &PredefinedMenuItem::undo(app, None)?,
-            &PredefinedMenuItem::redo(app, None)?,
-            &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, None)?,
-            &PredefinedMenuItem::copy(app, None)?,
-            &PredefinedMenuItem::paste(app, None)?,
-            &PredefinedMenuItem::select_all(app, None)?,
-        ],
-    )?;
-    let view = Submenu::with_items(
-        app,
-        "View",
-        true,
-        &[
-            &item("whole-map", "Whole Map", "CmdOrCtrl+0")?,
-            &item("update-branch", "Update Branch", "CmdOrCtrl+R")?,
-            &PredefinedMenuItem::fullscreen(app, None)?,
-        ],
-    )?;
-    let window = Submenu::with_items(app, "Window", true, &[&PredefinedMenuItem::minimize(app, None)?, &PredefinedMenuItem::maximize(app, None)?])?;
-    Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window])
+    // Copy and Select All have to be here for Cmd/Ctrl+C and +A to work in the page.
+    #[cfg(target_os = "macos")]
+    let edit_items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = vec![
+        Box::new(PredefinedMenuItem::undo(app, None)?),
+        Box::new(PredefinedMenuItem::redo(app, None)?),
+        Box::new(PredefinedMenuItem::separator(app)?),
+        Box::new(PredefinedMenuItem::cut(app, None)?),
+        Box::new(PredefinedMenuItem::copy(app, None)?),
+        Box::new(PredefinedMenuItem::paste(app, None)?),
+        Box::new(PredefinedMenuItem::select_all(app, None)?),
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let edit_items: Vec<Box<dyn tauri::menu::IsMenuItem<R>>> = vec![
+        Box::new(PredefinedMenuItem::cut(app, None)?),
+        Box::new(PredefinedMenuItem::copy(app, None)?),
+        Box::new(PredefinedMenuItem::paste(app, None)?),
+        Box::new(PredefinedMenuItem::select_all(app, None)?),
+    ];
+    let edit_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = edit_items.iter().map(|i| i.as_ref()).collect();
+    let edit = Submenu::with_items(app, "Edit", true, &edit_refs)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        // One group: About, Hide and Quit read fine together, and a lone About or Quit between dividers wouldn't.
+        let app_menu = Submenu::with_items(
+            app,
+            "Code Flyover",
+            true,
+            &[
+                &PredefinedMenuItem::about(app, Some("About Code Flyover"), Some(about))?,
+                &item("settings", "Settings…", "CmdOrCtrl+,")?,
+                &PredefinedMenuItem::hide(app, None)?,
+                &PredefinedMenuItem::hide_others(app, None)?,
+                &PredefinedMenuItem::show_all(app, None)?,
+                &PredefinedMenuItem::quit(app, None)?,
+            ],
+        )?;
+        let file = Submenu::with_items(app, "File", true, &[&item("open-repo", "Open Repo…", "CmdOrCtrl+O")?, &PredefinedMenuItem::close_window(app, None)?])?;
+        let view = Submenu::with_items(
+            app,
+            "View",
+            true,
+            &[
+                &item("whole-map", "Whole Map", "CmdOrCtrl+0")?,
+                &item("update-branch", "Update Branch", "CmdOrCtrl+R")?,
+                &PredefinedMenuItem::fullscreen(app, None)?,
+            ],
+        )?;
+        let window = Submenu::with_items(app, "Window", true, &[&PredefinedMenuItem::minimize(app, None)?, &PredefinedMenuItem::maximize(app, None)?])?;
+        Menu::with_items(app, &[&app_menu, &file, &edit, &view, &window])
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let file = Submenu::with_items(
+            app,
+            "File",
+            true,
+            &[
+                &item("open-repo", "Open Repo…", "CmdOrCtrl+O")?,
+                &item("settings", "Settings…", "CmdOrCtrl+,")?,
+                &PredefinedMenuItem::separator(app)?,
+                &item("close-window", "Close Window", "CmdOrCtrl+W")?,
+                &item("quit", "Quit", "CmdOrCtrl+Q")?,
+            ],
+        )?;
+        let view = Submenu::with_items(
+            app,
+            "View",
+            true,
+            &[
+                &item("whole-map", "Whole Map", "CmdOrCtrl+0")?,
+                &item("update-branch", "Update Branch", "CmdOrCtrl+R")?,
+                &item("fullscreen", "Toggle Full Screen", "F11")?,
+            ],
+        )?;
+        let help = Submenu::with_items(app, "Help", true, &[&PredefinedMenuItem::about(app, Some("About Code Flyover"), Some(about))?])?;
+        Menu::with_items(app, &[&file, &edit, &view, &help])
+    }
 }

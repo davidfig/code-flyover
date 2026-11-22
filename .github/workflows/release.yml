@@ -1,0 +1,65 @@
+# Builds the desktop app for macOS, Windows and Linux and attaches the installers to a draft GitHub release.
+# Push a tag like v0.1.0 (it should match "version" in src-tauri/tauri.conf.json), then review and publish the draft.
+# Also runnable by hand from the Actions tab, which builds and uploads to a draft release for the version in the config.
+name: Release desktop app
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The bundled server has Vite and its esbuild binary for the runner's CPU (src-tauri/stage-app.mjs),
+          # so each Mac architecture is built on its own runner instead of as one universal binary.
+          - { name: macOS (Apple silicon), os: macos-latest, args: '' }
+          - { name: macOS (Intel), os: macos-15-intel, args: '' }
+          - { name: Windows, os: windows-latest, args: '' }
+          - { name: Linux, os: ubuntu-22.04, args: '' }
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libxdo-dev
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Bundle the server (Vite and the app's files)
+        run: node src-tauri/stage-app.mjs
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tauriScript: cargo tauri
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: Code Flyover ${{ github.ref_type == 'tag' && github.ref_name || '__VERSION__' }}
+          releaseBody: Installers for macOS, Windows and Linux. The app needs Node.js 20.19+ (or 22.12+) and git on the machine; see the README.
+          # No version in the file names, so the site can find them: Code-Flyover-darwin-aarch64.dmg and so on.
+          assetNamePattern: 'Code-Flyover-[platform]-[arch][ext]'
+          releaseDraft: true
+          prerelease: false
+          args: --config src-tauri/tauri.bundle.conf.json ${{ matrix.args }}

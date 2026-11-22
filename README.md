@@ -1,85 +1,157 @@
-# Semantic Zoom
+# Code Flyover
 
-Code review on a map, for the human reviewer. See what a branch does and where it lands in the architecture from 1000 feet, then zoom through module → folder → file → diff.
+Code review on a map. See what a branch does and where it lands in your architecture from 1000 feet, then zoom through module → folder → file → diff without leaving the picture.
 
-The app helps you **understand** a change: what it does, where it sits, and whether that's where it belongs. It doesn't hunt for bugs. That's the AI review's job, and it happens in a Claude Code session, not here, so it has the full conversation, can read the code around the diff, ask questions, and carry across machines. The app's only AI use is the change descriptions.
+<!-- Screenshot: add docs/screenshot.png and uncomment.
+![A branch on the Code Flyover map](docs/screenshot.png)
+-->
 
-The top level is a **difference, not a summary**: the branch's changes, described and pinned to the code they cover, over a map of the repo, with its new, removed and forbidden dependencies. The research behind this is in the vault: `Computer Science/AI Research/Semantic Zoom/Semantic Zoom Research Overview.md`.
+Most review tools give you a list of files. Code Flyover gives you a map of the repo with the branch's changes laid over it:
 
-## Use
+- **What changed, pinned to the code.** The branch's hunks are grouped into a handful of described changes, shown as numbered cards over the files they touch. Hunks no description covers are flagged for you to read yourself.
+- **Where it lands.** New, removed and forbidden dependencies between modules, new cycles, new third-party packages, likely duplicates, and changed files with many importers, all checked from the code rather than written by a model.
+- **The diff itself.** Zoom in and every box is its diff, drawn on the GPU, so a large branch stays smooth at any zoom.
+
+It's built to help a person **understand** a change: what it does, where it sits, and whether that's where it belongs. Bug hunting is left to an AI reviewer you run separately (see [AI review](#ai-review)), whose findings then show up on the map.
+
+Everything runs on your machine. The app reads your repo through git, never touches your working tree, and never calls a model or sends code anywhere.
+
+## Requirements
+
+- Node.js 20.19+ or 22.12+
+- git
+- For the desktop app: Node.js and git on the machine (the installers don't include them). To build it yourself you also need Rust and the Tauri CLI (`cargo install tauri-cli`); on Linux, Tauri's [system packages](https://v2.tauri.app/start/prerequisites/#linux) (`libwebkit2gtk-4.1-dev` and friends).
+- The browser version works wherever Node does. The desktop app is built for macOS, Windows and Linux, but has only been tried on macOS so far.
+
+## Install
 
 ```bash
+git clone https://github.com/davidfig/code-flyover.git
+cd code-flyover
 npm install
-npm link            # once: puts the semantic-zoom command on your PATH
-semantic-zoom       # in any git repo (or: semantic-zoom ~/Programming/golemdocs)
+npm link        # puts the `flyover` command on your PATH
 ```
 
-`semantic-zoom` adds the repo to the app's list and opens http://localhost:5197/ on it, starting the app's server first if it isn't running (it stays in that terminal; Ctrl-C stops it). Pick a branch in the header: its map is made right then, in about a second, and kept in memory. Branches are listed newest first, with how far ahead of the base they are and whether they're checked out in a worktree. The side panel's **compared with** picks the base (default: the remote's default branch, e.g. `origin/main`). A branch checked out in a folder with uncommitted changes (a Claude Code session's worktree, say) is shown with them: the map reads a snapshot of that folder's files, made through an index of its own, so the folder, its index and its branches are never touched (the snapshot's objects stay in the repo's object store until `git gc`). The picker marks such branches "uncommitted changes". The view stays live: when the branch, its uncommitted files or its base change, the map is made again within a few seconds, with a note saying so. The repo menu also adds other repos by path and removes them from the list.
+## Quick start
 
-Everything is read from git on this machine (`git ls-tree`, `git cat-file`, `git diff`), so the repo's working tree is never touched, and nothing leaves the machine: the app never calls a model. The app's server is Vite with a small API (`vite.config.ts`, `server/api.ts`), so there's no build step; `npm run dev` runs the same app on http://localhost:5196/ for working on it. Its state is in `~/.semantic-zoom/`: the list of repos, saved change descriptions and imported AI reviews.
-
-### Desktop app
-
-`src-tauri/` wraps the same app in a window of its own (Tauri): a Dock icon, a menu bar (File › Open Repo… with the system's folder picker, View › Whole Map and Update Branch), and the window remembers its place. It runs the server from this checkout, so what you change here is what it shows:
+In any git repo:
 
 ```bash
-cd src-tauri && cargo tauri build --bundles app   # → src-tauri/target/release/bundle/macos/Semantic Zoom.app
+flyover
 ```
 
-On launch it uses the server on port 5197 if one is running (say from `semantic-zoom`), or starts one through your login shell, so `node` and `git` come from your shell profile as in a terminal. It stops the server it started when you quit. If the server can't start, the window shows its output (also in `~/.semantic-zoom/app-server.log`). The icon is drawn by `src-tauri/icon.mjs`; `src-tauri/icon.sh` remakes the icon files.
+This adds the repo to the app's list, starts the app's server on http://localhost:5197 if it isn't running, and opens it in your browser. You can also pass a folder: `flyover ~/code/my-project`. Ctrl-C in that terminal stops the server.
 
-### Architecture model
+Then:
 
-A repo's intended architecture (modules, which may import which, rules) is read from `.semantic-zoom.json` at its root, at the base commit, so a branch can't loosen the rules it's checked against; a branch that edits the file gets a warning saying so. Without one, `models/<repo name>.json` here is used, and failing that the model is inferred from the repo's folders (the base's dependencies count as intended). See `models/golemdocs.json` for the format.
+1. **Pick a branch** in the header. Branches are listed newest first, with how far ahead of the base they are. Its map is built on the spot, usually in about a second.
+2. **Pick the base** under **compared with** in the side panel. The default is the remote's default branch, such as `origin/main`.
+3. **Fly around.** Hover a change card to outline its files, and click it to zoom there. Double-click any box to read it full width. Press `j`/`k` to step through findings and `Esc` to clear the selection. **Whole map** resets the view.
 
-### AI review from a Claude Code session
+A branch checked out in a worktree with uncommitted changes is shown with those changes included. The map stays live: when the branch, its uncommitted files or its base change, it's rebuilt within a few seconds.
 
-The app never calls a model and needs no API key. The change descriptions and the AI review it shows are written by an outside AI, a Claude Code session, so a review done there lands on the map:
+The header's **Show** menu switches between just the changed files (the default) and the whole repo as a treemap, and can bring tests and translation files back in.
+
+## Architecture checks
+
+Without any setup, each top-level folder (and each package under `packages/`, `crates/`, `apps/` and so on) is a module, and the base branch's dependencies count as the allowed ones. Anything the branch adds is checked against that.
+
+To check against the architecture you intend instead, add a `.code-flyover.json` at the root of your repo:
+
+```json
+{
+  "name": "My project",
+  "source": "docs/architecture.md",
+  "modules": [
+    { "id": "core", "paths": ["src/core/"], "description": "Domain model, no I/O" },
+    { "id": "api", "paths": ["src/api/"], "description": "HTTP handlers" },
+    { "id": "web", "paths": ["web/"], "description": "The front end" }
+  ],
+  "allowed": { "core": [], "api": ["core"], "web": ["core"] },
+  "noThirdParty": ["core"],
+  "rules": ["Dependencies point inward: core never imports api or web."]
+}
+```
+
+- `allowed` lists which modules each module may import.
+- `noThirdParty` lists modules whose source may not import npm or Cargo packages.
+- `rules` are shown with the model as plain-text reminders.
+
+The file is read from the **base** commit, so a branch can't loosen the rules it's checked against. A branch that edits the file gets a warning.
+
+Dependencies are found for TypeScript/JavaScript and Rust.
+
+## AI review
+
+The app doesn't call a model and needs no API key. The change descriptions and the bug-hunting review are written by an AI agent you run yourself, which hands its work to the app through two commands:
 
 ```bash
-semantic-zoom export [folder] [--head <branch>] [--base <ref>] > input.md   # instructions, the JSON to write, the numbered hunks
-semantic-zoom import review.json [folder]                                    # checks it against the code and saves it
+flyover export [folder] [--head <branch>] [--base <ref>] > input.md
+flyover import review.json [folder]
 ```
 
-The JSON holds `changes` (what the branch does: a few titled groups of its hunks, shown as the map's change cards and the panel's **What changed**) `findings` (bugs and risks, each with a severity, detail, evidence and the paths to fly to), `files` (for each changed file, what it is and what the branch did to it) and `folders` (for each folder above a changed file, what's kept in it, written from its files' opening comments, which the export lists). Rest the pointer on a file's or folder's name on the map to see them; a module's name shows its description from the architecture model. The import drops hunk ids that don't exist, lists hunks no change covers, drops paths that aren't on the map, and refuses a file written for an older commit of the branch. Descriptions go to `~/.semantic-zoom/descriptions/`, findings to `~/.semantic-zoom/reviews/`. The panel shows the findings first, under **AI review**, tinted and labelled AI-written so they never pass for the analyzer's checks, and shows a new review within a few seconds of its import, without moving the map or your selection.
+`export` prints everything the reviewer needs: instructions, the JSON format to write, and the branch's numbered hunks. `import` checks the JSON against the code and saves it. It drops hunk ids that don't exist, lists hunks no change covers, and refuses a review written for an older commit. The app shows the new review within a few seconds, labelled as AI-written so it never passes for the analyzer's own checks.
 
-From the terminal, `npm run analyze -- <repo> <branch> [base]` prints a branch's analysis and findings, with any saved descriptions.
+### With Claude Code
 
-The `/zoom-review` skill (`skills/zoom-review/SKILL.md`, linked into `~/.claude/skills/`) walks a Claude Code session through it: export, review, write, import.
+A ready-made [Claude Code](https://claude.com/claude-code) skill walks a session through export, review and import. Link it into your skills folder once:
 
-## What changed
+```bash
+ln -s "$PWD/skills/flyover-review" ~/.claude/skills/flyover-review
+```
 
-Claude groups the branch's source hunks into the handful of things the branch does, with a title and a sentence or two each. The code checks the result:
+Then, in a Claude Code session in the repo you're reviewing, run `/flyover-review`.
 
-- Every source hunk must belong to a change. Any that don't are listed as **Not described**, on the map and in the panel, for you to read yourself.
-- Hunk ids the model cites that don't exist are dropped and counted.
+### With another agent
 
-The descriptions say what changed, never whether it's good or fits the architecture. Fluent prose rounds off details, so the architecture findings come from the code, sit above the descriptions, and don't depend on them.
+Any agent that can run shell commands works: have it run `flyover export`, follow the instructions in the output, and run `flyover import` on the JSON it writes. [`skills/flyover-review/SKILL.md`](skills/flyover-review/SKILL.md) has the steps in plain prose, which you can reuse as a prompt.
 
-## Architecture
+## Desktop app
 
-- **Module dependencies against the intended architecture** (a reflexion model, Murphy et al. 1995). `models/<repo>.json` lists the modules, which may depend on which, and which may not take third-party packages. Without a model file, modules are the top-level folders (and `crates/*`, `packages/*`, `apps/*`), and the base branch's dependencies count as the intended ones. If only tests crossed a forbidden line before, the first source import that crosses it is still a violation.
-- **New cycles** between modules and between folders. Type-only imports don't count, since they're erased at compile time.
-- **New third-party packages** and dependency changes in `package.json`.
-- **Possible duplicates:** an exported name the branch adds that's already exported elsewhere in the same module.
-- **Reach:** changed files with many unchanged direct importers.
-- **Untested change:** a module with 3+ changed source files and no changed tests.
+`src-tauri/` wraps the same app in a window of its own (built with Tauri), with a menu bar and File › Open Repo… using the system folder picker. It runs on macOS, Windows and Linux (the Windows and Linux builds are untested so far).
 
-The footprint counts source files only. Tests, translations (`i18n/`, `locales/`, …) and generated files are counted separately.
+**Download:** installers (macOS `.dmg`, Windows `.msi` / `.exe`, Linux `.deb`, `.rpm` and `.AppImage`) are attached to each [GitHub release](https://github.com/davidfig/code-flyover/releases). They're unsigned, so macOS and Windows will warn the first time you open one. You need Node.js and git installed.
 
-Dependencies are found for TypeScript/JavaScript (imports, re-exports, `require`, dynamic `import()`, `new URL(…, import.meta.url)`, workspace package names and their `exports`) and Rust (`use` trees and inline `crate::`/`super::`/workspace-crate paths).
+**Build it yourself:**
 
-## The map
+```bash
+node src-tauri/stage-app.mjs      # copies the server and Vite into src-tauri/app, to bundle in the installer
+cd src-tauri
+cargo tauri build --config tauri.bundle.conf.json
+# → src-tauri/target/release/bundle/ (macOS: macos/Code Flyover.app and dmg/; Windows: msi/ and nsis/; Linux: deb/, rpm/, appimage/)
+```
 
-- By default it shows only the changed files (plus the target of any forbidden import, so a violation's arrow has both ends), laid out for reading: every file is a column of text, taller for a longer diff (by √rows, not in proportion), grouped by folder and module. Folders and columns then stretch to fill all the space, and the map takes the window's shape, so there's no blank around or between them. A box bigger than its diff fills with the unchanged lines around the change. Text is the same size in every box; a wider box just wraps later.
-- The header's **Show** menu holds the view options, in two groups (Files; Highlight), and counts how many differ from the defaults. **Unchanged files** switches to the whole repo as a squarified treemap (module → folder → file, sized by √lines), with **Importers of changed files** tinting the files that import a change. **Tests** and **Translations** put those back in either view. Choices are remembered.
-- A module whose files all sit in one folder is shown as that folder (`server/src` is just `server`).
-- Zoomed out, numbered **change cards** sit over the code they describe. Hover one to outline its files, click to zoom to them. They fade as you zoom in, and step aside while you look at a change, finding or file.
-- Arrows are kept for what a list can't show at a glance: a forbidden import (always drawn), a finding's edge, and the imports a change added or removed between its files when you click it. Selecting a file outlines what it imports (teal) and what imports it (purple) instead of drawing arrows.
-- A box opens (shows its children) once it's 170 px on screen; arrows join the deepest open boxes, so they regroup as you zoom.
-- Diff text is drawn on the GPU: MTSDF glyphs (Liberation Mono, OFL, from golemdocs' font atlases in `public/fonts/`), laid out off the main thread in a worker (`web/text/`), so a big PR stays smooth at any zoom.
-- Labels are tags floating at each box's top-left corner (no space is kept for them, so boxes hold only their files), a fixed screen size, sliding along the window's edge when the corner is off screen. Module and folder tags fade out as diff text becomes readable, unless their box is mostly off screen. Diff text is drawn at every zoom, however small (zoomed out, the boxes are their text), GitHub-style (line numbers, hunk headers, buttons to show more lines around a change), and are built in idle time after a branch loads so zooming in doesn't stall.
-- Select a file and the wheel over its text scrolls it (decided when the gesture starts); its text wraps at the window's edge, and can scroll so any line reaches the visible area.
-- The breadcrumbs in the header say where the middle of the view is; click one to zoom to it.
-- Double-click a box to read it: it zooms until the box fills the window's width, with its top at the window's top.
-- Keys: `j`/`k` step through findings, `Esc` clears the selection (the view stays put; **Whole map** resets it).
+Without the first step and `--config`, `cargo tauri build` makes an app that runs the server from the checkout it was built in (rebuild it if you move the folder), which is fine for yourself.
+
+On launch the app uses a server already running on port 5197, or starts one. On macOS and Linux that goes through your login shell, so `node` and `git` are found as they are in your terminal; on Windows `node` is looked up on the PATH (the Node.js and git installers add themselves to it; restart the app after installing). If the server can't start, the window shows its output. Its log is `~/.code-flyover/app-server.log`.
+
+**Releasing:** push a tag such as `v0.1.0` (matching `version` in `src-tauri/tauri.conf.json`). The workflow in `.github/workflows/release.yml` builds every platform and attaches the installers to a draft release.
+
+## Your data
+
+The app keeps its state in `~/.code-flyover/`: the list of repos, your settings, and saved change descriptions and AI reviews. Repos are only ever read (`git ls-tree`, `git cat-file`, `git diff`). Uncommitted changes are read through a temporary index of the app's own, so your folder, index and branches are never touched.
+
+## Development
+
+```bash
+npm run dev          # the same app on http://localhost:5196, with hot reload
+npm run typecheck
+npm run analyze -- <repo> <branch> [base]   # print a branch's analysis in the terminal
+```
+
+There's no build step: the server is Vite with a small API (`vite.config.ts`, `server/api.ts`), and what's in the checkout is what runs.
+
+| Folder | What's in it |
+|---|---|
+| `analyzer/` | Reads git, finds dependencies, runs the architecture checks |
+| `server/` | The API and the `export`/`import` commands |
+| `web/` | The map: layout, WebGL rendering, GPU text (`web/text/`), the side panel |
+| `shared/` | Types shared by the server and the page |
+| `src-tauri/` | The desktop app |
+| `skills/` | The Claude Code skill |
+
+[docs/design.md](docs/design.md) explains how the map, the checks and the descriptions work, and why.
+
+## License
+
+MIT, see [LICENSE](LICENSE). The bundled Liberation Mono font is under the SIL Open Font License ([`public/fonts/liberation-mono/LICENSE.txt`](public/fonts/liberation-mono/LICENSE.txt)).

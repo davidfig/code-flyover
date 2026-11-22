@@ -1,12 +1,13 @@
 [package]
-name = "semantic-zoom-desktop"
+name = "code-flyover-desktop"
 version = "0.1.0"
-description = "Semantic Zoom in its own window: starts the app's server from this checkout and shows it"
+description = "Code Flyover in its own window: starts the app's server from this checkout and shows it"
+license = "MIT"
 edition = "2021"
 publish = false
 
 [lib]
-name = "semantic_zoom_desktop_lib"
+name = "code_flyover_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    semantic_zoom_desktop_lib::run();
+    code_flyover_desktop_lib::run();
 }
