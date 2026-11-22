@@ -41,6 +41,8 @@ export const DEFS = {
 
   // Map: what it shows
   showUnchanged: bool('Map', 'Unchanged files', 'Lay out the whole repo, not just the files the branch touches.', false),
+  showCode: bool('Map', 'Code', 'Source and generated files on the map.', true),
+  showDocs: bool('Map', 'Docs', 'Markdown and text files on the map.', true),
   showTests: bool('Map', 'Tests', 'Unit and end-to-end tests on the map.', false),
   showLocales: bool('Map', 'Translations', 'Translation files on the map.', false),
   showImpacted: bool('Map', 'Importers of changed files', 'Show and shade the files that import a changed file.', true),
@@ -51,6 +53,7 @@ export const DEFS = {
   openPx: num('Zoom and mouse', 'Folders open at', 'A module or folder shows what’s inside once it’s this wide on screen (its short side).', 170, 10, 10, 'px'),
   codeFadeFromPx: num('Zoom and mouse', 'Code appears at', 'Code this many pixels high starts to fade in, headings fade out, and clicks go to the code.', 3, 0.5, 0.5, 'px'),
   codeReadablePx: num('Zoom and mouse', 'Code is fully shown at', 'From this text size the code is drawn in full and the view counts as reading the diff.', 6.6, 1, 0.1, 'px'),
+  readZoomPercent: num('Zoom and mouse', 'Reading size', 'How big code gets when you double-click a file to read it, against its normal 12 px. A narrow window shows it smaller, to fit.', 150, 50, 25, '%'),
   maxZoomPercent: num('Zoom and mouse', 'Deepest zoom', 'How big code gets at the deepest zoom, against its normal 12 px.', 300, 100, 25, '%'),
   zoomSpeed: num('Zoom and mouse', 'Zoom speed', 'How fast a pinch or ⌘-scroll zooms.', 1, 0.1, 0.25, '×'),
   flyMs: num('Zoom and mouse', 'Fly time', 'How long the view takes to move to something you picked. 0 jumps straight there.', 650, 0, 50, 'ms'),

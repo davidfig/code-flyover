@@ -17,7 +17,20 @@
       <span id="repo"></span>
       <span id="branch"></span>
       <nav id="crumbs" aria-label="Where you are on the map"></nav>
-      <button id="fit" title="Show the whole map">Whole map</button>
+      <div id="scope" class="seg" role="group" aria-label="What the map shows">
+        <button data-whole="0" title="Only the files the branch changes (U)">Changes</button>
+        <button data-whole="1" title="Every file in the repo (U)">Whole repo</button>
+      </div>
+      <div id="kinds">
+        <button id="kindsBtn" class="picker" aria-haspopup="true" aria-expanded="false" aria-controls="kindsPop" title="Which kinds of files are on the map: code, docs, tests, translations"><span class="picker-name">Show</span><i class="picker-caret"></i></button>
+        <div id="kindsPop" class="picker-pop" role="group" aria-label="Also on the map" hidden>
+          <label class="picker-row" data-role="source generated"><input type="checkbox" data-key="showCode" /><span class="picker-label">Code</span><kbd>C</kbd></label>
+          <label class="picker-row" data-role="doc"><input type="checkbox" data-key="showDocs" /><span class="picker-label">Docs</span><kbd>D</kbd></label>
+          <label class="picker-row" data-role="test"><input type="checkbox" data-key="showTests" /><span class="picker-label">Tests</span><kbd>T</kbd></label>
+          <label class="picker-row" data-role="locale"><input type="checkbox" data-key="showLocales" /><span class="picker-label">Translations</span><kbd>L</kbd></label>
+        </div>
+      </div>
+      <button id="fit" title="Zoom out to see the whole map (⌘0)">Fit</button>
       <button id="settingsBtn" class="icon" title="Settings (⌘,)" aria-label="Settings"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M10.3 3h3.4l.5 2.4 1.7.9 2.3-.9 1.7 2.9-1.9 1.6v2l1.9 1.6-1.7 2.9-2.3-.9-1.7.9-.5 2.6h-3.4l-.5-2.6-1.7-.9-2.3.9-1.7-2.9 1.9-1.6v-2L4.1 8.3l1.7-2.9 2.3.9 1.7-.9z"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></button>
     </header>
     <main>

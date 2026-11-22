@@ -1,0 +1,9 @@
+{
+  "bundle": { "createUpdaterArtifacts": true },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/davidfig/code-flyover/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk2NTJBQ0EwRTJERDlGNDMKUldSRG45M2lvS3hTbHZjS0M4QjVPUWp2RytLMmx2cGlUZU5xVHlyY1FSNGtRczZJT0I2aEJKdFQK"
+    }
+  }
+}

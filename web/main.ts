@@ -1,10 +1,11 @@
-import type { Analysis, ChangeSet, Finding, Review } from '../shared/types.ts'
+import type { Analysis, ChangeSet, Finding, RepoNotes, Review } from '../shared/types.ts'
 import { esc, ZoomMap, type Level } from './map.ts'
 import { roleOf, type MapNode } from './layout.ts'
 import { picker, type Picker } from './picker.ts'
 import { DEFS, LAYOUT_KEYS, onSettingsChange, settings, update, type SettingKey } from './settings.ts'
 import { loadSettings } from './settingsStore.ts'
 import { openSettings } from './settingsDialog.ts'
+import { checkForUpdates, installUpdates, type TauriUpdates } from './updates.ts'
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector(sel) as T
 
@@ -74,9 +75,8 @@ function setupSplitter() {
 // ---------- the desktop app (src-tauri) ----------
 
 /** What the desktop app's window offers the page (Tauri's global API); undefined in a browser tab. */
-interface TauriGlobal {
+interface TauriGlobal extends TauriUpdates {
   dialog: { open(options: { directory: boolean; title?: string; defaultPath?: string }): Promise<string | null> }
-  event: { listen(name: string, handler: (e: { payload: string }) => void): Promise<() => void> }
 }
 const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__
 
@@ -240,7 +240,7 @@ async function route() {
     const first = branchList!.branches[0]
     if (!first) {
       renderBranchPicker()
-      return panelMessage(`<h2>Nothing to review in ${esc(repo.name)}</h2><p>It has no local branches besides <code>${esc(branchList!.base)}</code>.</p>`)
+      return panelMessage(`<h2>Nothing to review in ${esc(repo.name)}</h2><p>It has no local branches.</p>`)
     }
     return go(repo.id, first.name)
   }
@@ -256,6 +256,8 @@ async function route() {
     return panelMessage(`<h2>Couldn't analyze ${esc(current.head)}</h2><p class="error">${esc(e instanceof Error ? e.message : String(e))}</p>`)
   }
   map.load(analysis)
+  syncScope()
+  void fillWholeRepoText()
   renderPanel()
 }
 
@@ -266,7 +268,7 @@ async function route() {
 async function showNewlySaved(): Promise<boolean> {
   if (!current || !analysis) return false
   const { repo, head, base } = current
-  let s: { changes: ChangeSet | null; review: Review | null }
+  let s: { changes: ChangeSet | null; review: Review | null; notes?: RepoNotes }
   try {
     s = await api(`/api/saved?${new URLSearchParams({ repo: repo.id, head, base })}`)
   } catch {
@@ -275,7 +277,13 @@ async function showNewlySaved(): Promise<boolean> {
   if (current?.head !== head || current.base !== base || current.repo.id !== repo.id) return false
   const changesNew = (s.changes?.generatedAt ?? null) !== (analysis.changes?.generatedAt ?? null)
   const reviewNew = (s.review?.generatedAt ?? null) !== (analysis.review?.generatedAt ?? null)
-  if (!changesNew && !reviewNew) return false
+  // The repo's notes only feed the tooltips: taken in quietly (the map reads them when a tooltip opens).
+  const notesNew = !!s.notes && JSON.stringify(s.notes) !== JSON.stringify(analysis.notes ?? null)
+  if (notesNew) analysis.notes = s.notes
+  if (!changesNew && !reviewNew) {
+    if (notesNew) flashNote('File and folder notes updated')
+    return notesNew
+  }
   analysis.changes = s.changes ?? undefined
   analysis.review = s.review ?? undefined
   if (changesNew) map.setChanges(analysis.changes)
@@ -332,6 +340,8 @@ async function stayLive() {
       const panel = $('#panel-body')
       const scroll = panel.scrollTop
       map.load(analysis)
+      syncScope()
+      void fillWholeRepoText()
       renderPanel()
       panel.scrollTop = scroll
       flashNote(!moved ? `Updated: ${base} moved to ${a.baseSha.slice(0, 7)}` : a.uncommitted ? `Updated: ${head}’s uncommitted changes` : `Updated to ${head}’s new commit ${a.headSha.slice(0, 7)}`)
@@ -354,16 +364,89 @@ window.addEventListener('error', (e) => report(`${e.message} at ${e.filename}:${
 window.addEventListener('unhandledrejection', (e) => report(`Unhandled: ${e.reason instanceof Error ? e.reason.stack ?? e.reason.message : String(e.reason)}`))
 
 /** The map's view options (MapOptions): settings, in the Settings dialog's Map group. */
-const SHOW_KEYS = ['showImpacted', 'dimUnchanged', 'showTests', 'showLocales', 'showUnchanged', 'showTiming'] as const
+const SHOW_KEYS = ['showImpacted', 'dimUnchanged', 'showCode', 'showTests', 'showLocales', 'showDocs', 'showUnchanged', 'showTiming'] as const
 const showOptions = () => Object.fromEntries(SHOW_KEYS.map((k) => [k, settings[k]])) as unknown as ZoomMap['opts']
 
 /** Settings changed (from the dialog, the divider, an import, another window): passes them on to what uses them. */
 function settingsChanged(changed: SettingKey[]) {
   const show = changed.filter((k) => (SHOW_KEYS as readonly string[]).includes(k))
   if (show.length) map.setOptions(showOptions())
+  if (changed.some((k) => k === 'showUnchanged' || k === 'showCode' || k === 'showTests' || k === 'showLocales' || k === 'showDocs')) {
+    syncScope()
+    void fillWholeRepoText()
+  }
   const rest = changed.filter((k) => !show.includes(k) && k !== 'panelWidth' && k !== 'panelTextPx' && k !== 'tipTextPx')
   if (rest.length) map.settingsChanged(rest, rest.some((k) => LAYOUT_KEYS.includes(k)))
   if (changed.includes('liveCheckSeconds')) startLiveChecks()
+}
+
+/**
+ * The header's map switches, each a setting one click (or key) away: Changes | Whole repo (Unchanged files), and the
+ * Show list's Code, Docs, Tests and Translations (greyed out when the repo has none).
+ */
+const scopeButtons = () => [...document.querySelectorAll<HTMLButtonElement>('#scope button')]
+const kindInputs = () => [...document.querySelectorAll<HTMLInputElement>('#kindsPop input')]
+type KindKey = 'showCode' | 'showTests' | 'showLocales' | 'showDocs'
+function syncScope() {
+  for (const b of scopeButtons()) b.setAttribute('aria-pressed', String((b.dataset.whole === '1') === settings.showUnchanged))
+  let on = 0
+  for (const input of kindInputs()) {
+    const row = input.closest('label')!
+    const roles = row.dataset.role!.split(' ')
+    const none = !!analysis && !analysis.files.some((f) => roles.includes(roleOf(f)))
+    input.checked = settings[input.dataset.key as KindKey]
+    input.disabled = none
+    row.classList.toggle('none', none)
+    row.title = none ? `None in this repo` : ''
+    if (input.checked && !none) on++
+  }
+  $('#kindsBtn .picker-name').textContent = `Show (${on})`
+}
+
+/** Opens or closes the Show list; it closes on Escape or a click outside it. */
+function showKinds(open: boolean, refocus = false) {
+  const pop = $('#kindsPop')
+  const btn = $('#kindsBtn')
+  if (pop.hidden === !open) return
+  pop.hidden = !open
+  btn.classList.toggle('open', open)
+  btn.setAttribute('aria-expanded', String(open))
+  if (open) kindInputs().find((i) => !i.disabled)?.focus({ preventScroll: true })
+  else if (refocus) btn.focus({ preventScroll: true })
+}
+const setWholeRepo = (whole: boolean) => update({ showUnchanged: whole })
+const toggleKind = (key: KindKey) => update({ [key]: !settings[key] })
+
+/**
+ * Whole repo shows every file's text, not just the changed ones': the analysis only carries changed files' text, so
+ * the rest is read once per analysis and each unchanged file gets one run of plain lines (no + or −).
+ */
+let textFilled: Analysis | null = null
+async function fillWholeRepoText() {
+  const a = analysis
+  if (!a || !current || !map.wholeRepo || textFilled === a) return
+  textFilled = a
+  let texts: Record<string, string>
+  try {
+    texts = await api<Record<string, string>>(`/api/texts?${new URLSearchParams({ repo: current.repo.id, sha: a.headSha })}`)
+  } catch {
+    textFilled = null
+    return
+  }
+  if (analysis !== a) return
+  let added = 0
+  for (const f of a.files) {
+    if (f.status !== 'unchanged' || f.hunks?.length) continue
+    const t = texts[f.path]
+    if (t === undefined) continue
+    const lines = t.split('\n')
+    if (lines[lines.length - 1] === '') lines.pop()
+    if (!lines.length) continue
+    f.text = t
+    f.hunks = [{ header: `@@ -1,${lines.length} +1,${lines.length} @@`, lines: lines.map((s) => ({ t: ' ' as const, s })) }]
+    added++
+  }
+  if (added) map.textsChanged()
 }
 
 let liveTimer: ReturnType<typeof setInterval> | undefined
@@ -397,10 +480,17 @@ async function main() {
     // The window's title bar is the header: room for the window buttons, and dragging it moves the window.
     document.documentElement.classList.add('tauri')
     for (const el of [$('header'), $('header .brand')]) el.setAttribute('data-tauri-drag-region', '')
-    tauri.event.listen('native-menu', ({ payload }) => {
+    installUpdates(tauri)
+    tauri.event.listen<string>('native-menu', ({ payload }) => {
       if (payload === 'settings') openSettings()
+      else if (payload === 'check-updates') void checkForUpdates()
       else if (payload === 'open-repo') addRepo()
       else if (payload === 'whole-map') $('#fit').click()
+      else if (payload === 'whole-repo') setWholeRepo(!settings.showUnchanged)
+      else if (payload === 'show-code') toggleKind('showCode')
+      else if (payload === 'show-tests') toggleKind('showTests')
+      else if (payload === 'show-locales') toggleKind('showLocales')
+      else if (payload === 'show-docs') toggleKind('showDocs')
       else if (payload === 'update-branch') {
         branchList = null // read the branches again too
         route()
@@ -417,6 +507,19 @@ async function main() {
   route()
 
   $('#settingsBtn').onclick = () => openSettings()
+  for (const b of scopeButtons()) b.onclick = () => setWholeRepo(b.dataset.whole === '1')
+  $('#kindsBtn').onclick = () => showKinds($('#kindsPop').hidden)
+  for (const input of kindInputs()) input.onchange = () => update({ [input.dataset.key as KindKey]: input.checked })
+  window.addEventListener('pointerdown', (e) => {
+    if (!$('#kinds').contains(e.target as Node)) showKinds(false)
+  }, true)
+  $('#kindsPop').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      showKinds(false, true)
+    }
+  })
+  syncScope()
   // ⌘, (Ctrl+, elsewhere), as in every Mac app. The desktop app's menu has it too, and gets there first.
   window.addEventListener('keydown', (e) => {
     if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
@@ -434,11 +537,19 @@ async function main() {
   window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement) return
     if (e.key === 'Escape') {
-      // Closes an opened tooltip and drops the selection; the view stays where it is (Whole map resets it).
+      // Closes an opened tooltip and drops the selection; the view stays where it is (Fit resets it).
       map.hideTip()
       map.clearSelection()
       setActive(-1)
       document.querySelectorAll('.change.active').forEach((x) => x.classList.remove('active'))
+    }
+    if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+      const k = e.key.toLowerCase()
+      if (k === 'u') setWholeRepo(!settings.showUnchanged)
+      else if (k === 'c') toggleKind('showCode')
+      else if (k === 't') toggleKind('showTests')
+      else if (k === 'l') toggleKind('showLocales')
+      else if (k === 'd') toggleKind('showDocs')
     }
     if ((e.key === 'j' || e.key === 'k') && analysis) {
       const next = Math.max(0, Math.min(allFindings().length - 1, activeFinding + (e.key === 'j' ? 1 : -1)))
@@ -487,7 +598,8 @@ function renderPanel() {
       <h1>${esc(a.title)}</h1>
       <div id="newer" class="newer" hidden></div>
       <div class="sub"><b>${esc(a.repo)}</b> · ${esc(a.head)} compared with ${baseSelect()} · ${commitCount(a)}</div>
-      <div class="stats"><span>${source.length} source files</span><span class="plus">+${add}</span><span class="minus">−${del}</span>${muted.length ? `<span title="Tests, translations and generated files: on the map but muted">${muted.length} tests/translations</span>` : ''}${a.otherChanges.length ? `<span>${a.otherChanges.length} other files</span>` : ''}</div>
+      <div class="stats"><span>${source.length} source files</span><span class="plus">+${add}</span><span class="minus">−${del}</span>${muted.length ? `<span title="Tests, translations, docs and generated files: on the map but muted">${muted.length} tests, translations, docs</span>` : ''}${a.otherChanges.length ? `<span>${a.otherChanges.length} other files</span>` : ''}</div>
+      ${changed.length || a.otherChanges.length ? '' : `<p class="hint">No changes against ${esc(a.base)}: the map shows the whole repo.</p>`}
       <details><summary>Commits</summary><ul class="commits">${commits}</ul></details>
     </section>
     ${reviewHtml()}

@@ -1,5 +1,6 @@
-//! The menu bar. The app's own items (Settings, Open Repo, Whole Map, Update Branch) send their id to the page as the
-//! `native-menu` event (lib.rs), which runs them; the rest are system items.
+//! The menu bar. The app's own items (Settings, Check for Updates, Open Repo, Whole Repo, Code, Docs, Tests, Translations, Fit Map, Update Branch) send their id to the page as the
+//! `native-menu` event (lib.rs), which runs them, except Install Claude Code Skill…, which lib.rs runs itself
+//! (install.rs); the rest are system items.
 
 use tauri::menu::{AboutMetadata, Menu, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
@@ -34,14 +35,18 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
 
     #[cfg(target_os = "macos")]
     {
-        // One group: About, Hide and Quit read fine together, and a lone About or Quit between dividers wouldn't.
+        // Two groups: the app's own (About, Check for Updates, Install, Settings), then the system's (Hide…, Quit). Quit stays with Hide
+        // so it isn't alone between dividers.
         let app_menu = Submenu::with_items(
             app,
             "Code Flyover",
             true,
             &[
                 &PredefinedMenuItem::about(app, Some("About Code Flyover"), Some(about))?,
+                &MenuItemBuilder::with_id("check-updates", "Check for Updates…").build(app)?,
+                &MenuItemBuilder::with_id("install-skill", "Install Claude Code Skill…").build(app)?,
                 &item("settings", "Settings…", "CmdOrCtrl+,")?,
+                &PredefinedMenuItem::separator(app)?,
                 &PredefinedMenuItem::hide(app, None)?,
                 &PredefinedMenuItem::hide_others(app, None)?,
                 &PredefinedMenuItem::show_all(app, None)?,
@@ -54,7 +59,13 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             "View",
             true,
             &[
-                &item("whole-map", "Whole Map", "CmdOrCtrl+0")?,
+                &MenuItemBuilder::with_id("whole-repo", "Changes / Whole Repo (U)").build(app)?,
+                &MenuItemBuilder::with_id("show-code", "Show Code (C)").build(app)?,
+                &MenuItemBuilder::with_id("show-docs", "Show Docs (D)").build(app)?,
+                &MenuItemBuilder::with_id("show-tests", "Show Tests (T)").build(app)?,
+                &MenuItemBuilder::with_id("show-locales", "Show Translations (L)").build(app)?,
+                &PredefinedMenuItem::separator(app)?,
+                &item("whole-map", "Fit Map", "CmdOrCtrl+0")?,
                 &item("update-branch", "Update Branch", "CmdOrCtrl+R")?,
                 &PredefinedMenuItem::fullscreen(app, None)?,
             ],
@@ -70,6 +81,7 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             true,
             &[
                 &item("open-repo", "Open Repo…", "CmdOrCtrl+O")?,
+                &MenuItemBuilder::with_id("install-skill", "Install Claude Code Skill…").build(app)?,
                 &item("settings", "Settings…", "CmdOrCtrl+,")?,
                 &PredefinedMenuItem::separator(app)?,
                 &item("close-window", "Close Window", "CmdOrCtrl+W")?,
@@ -81,12 +93,24 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             "View",
             true,
             &[
-                &item("whole-map", "Whole Map", "CmdOrCtrl+0")?,
+                &MenuItemBuilder::with_id("whole-repo", "Changes / Whole Repo (U)").build(app)?,
+                &MenuItemBuilder::with_id("show-code", "Show Code (C)").build(app)?,
+                &MenuItemBuilder::with_id("show-docs", "Show Docs (D)").build(app)?,
+                &MenuItemBuilder::with_id("show-tests", "Show Tests (T)").build(app)?,
+                &MenuItemBuilder::with_id("show-locales", "Show Translations (L)").build(app)?,
+                &PredefinedMenuItem::separator(app)?,
+                &item("whole-map", "Fit Map", "CmdOrCtrl+0")?,
                 &item("update-branch", "Update Branch", "CmdOrCtrl+R")?,
                 &item("fullscreen", "Toggle Full Screen", "F11")?,
             ],
         )?;
-        let help = Submenu::with_items(app, "Help", true, &[&PredefinedMenuItem::about(app, Some("About Code Flyover"), Some(about))?])?;
+        // Updates, then About, as Help menus go.
+        let help = Submenu::with_items(
+            app,
+            "Help",
+            true,
+            &[&MenuItemBuilder::with_id("check-updates", "Check for Updates…").build(app)?, &PredefinedMenuItem::about(app, Some("About Code Flyover"), Some(about))?],
+        )?;
         Menu::with_items(app, &[&file, &edit, &view, &help])
     }
 }

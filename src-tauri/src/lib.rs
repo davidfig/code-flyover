@@ -1,6 +1,7 @@
 // Code Flyover in its own window. The app is the same web app `flyover` serves (Vite with the API in
 // server/api.ts, from this checkout): this starts that server, or uses one already running, and shows it. The window
-// adds what a browser tab can't: a Dock icon, the menu bar (menu.rs), and a native folder picker for Open Repo.
+// adds what a browser tab can't: a Dock icon, the menu bar (menu.rs), a native folder picker for Open Repo, and
+// updates of itself (update.rs).
 //
 // The server runs from a copy of the app's files bundled with the installer (the `app` resource, made by
 // stage-app.mjs), or from the checkout this was built from (APP_DIR) in a local build. Node and git are not bundled:
@@ -8,7 +9,9 @@
 // terminal; on Windows `node` is looked up on the PATH the app was started with. The server is stopped when the app
 // quits, unless it was already running before (from `flyover` or another copy of the app).
 
+mod install;
 mod menu;
+mod update;
 
 use std::fs::{self, File};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -178,14 +181,18 @@ fn serde_json_string(s: &str) -> String {
 }
 
 pub fn run() {
-    let app = tauri::Builder::default()
+    let app = update::plugin(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())
         // Reopen the window where and at the size you last left it.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(Server::default())
+        // Updates (update.rs): the page offers them and asks for a check.
+        .invoke_handler(tauri::generate_handler![update::update_ready, update::check_for_updates, update::install_update])
         .menu(menu::build)
         // A menu click goes to the page, which knows what each item does (web/main.ts, the `native-menu` event).
         .on_menu_event(|app, event| match event.id().0.as_str() {
+            // Handled here, not in the page: it writes files outside the app and shows native dialogs (install.rs).
+            "install-skill" => install::run(app, app_dir(app)),
             // Windows and Linux menu items that the system items can't cover (menu.rs).
             "quit" => app.exit(0),
             "close-window" => {
@@ -205,6 +212,7 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             thread::spawn(move || connect(handle));
+            update::start(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

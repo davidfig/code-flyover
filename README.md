@@ -46,7 +46,7 @@ Then:
 
 1. **Pick a branch** in the header. Branches are listed newest first, with how far ahead of the base they are. Its map is built on the spot, usually in about a second.
 2. **Pick the base** under **compared with** in the side panel. The default is the remote's default branch, such as `origin/main`.
-3. **Fly around.** Hover a change card to outline its files, and click it to zoom there. Double-click any box to read it full width. Press `j`/`k` to step through findings and `Esc` to clear the selection. **Whole map** resets the view.
+3. **Fly around.** Hover a change card to outline its files, and click it to zoom there. Double-click any box to read it full width. Press `j`/`k` to step through findings and `Esc` to clear the selection. **Fit** resets the view, and **Changes | Whole repo** (or `U`) switches between the files the branch changes and the whole repo. The **Show** list picks which kinds of files are on the map: **Code** and **Docs** (Markdown and text) to start with, plus **Tests** and **Translations** (keys `C`, `D`, `T`, `L`).
 
 A branch checked out in a worktree with uncommitted changes is shown with those changes included. The map stays live: when the branch, its uncommitted files or its base change, it's rebuilt within a few seconds.
 
@@ -94,13 +94,27 @@ flyover import review.json [folder]
 
 ### With Claude Code
 
-A ready-made [Claude Code](https://claude.com/claude-code) skill walks a session through export, review and import. Link it into your skills folder once:
+A ready-made [Claude Code](https://claude.com/claude-code) skill walks a session through export, review and import. In the desktop app, choose **Install Claude Code Skill…** (in the Code Flyover menu on macOS, File on Windows and Linux). It installs the app's skills (`/flyover-review`, `/flyover-describe`) in `~/.claude/skills/`, and a `flyover` command that runs the app's own copy (`~/.local/bin/flyover` on macOS and Linux; on Windows `~/.code-flyover/bin/flyover.cmd`, added to your PATH). Run it again after updating the app. From a checkout, link the skill in once instead:
 
 ```bash
 ln -s "$PWD/skills/flyover-review" ~/.claude/skills/flyover-review
 ```
 
 Then, in a Claude Code session in the repo you're reviewing, run `/flyover-review`.
+
+### Notes on every file and folder
+
+A review describes only the files the branch changes. To put a note on every source file and folder in the repo, shown on hovering its name in any branch, run:
+
+```bash
+flyover describe [folder] [--under <dir>] [--batch <n>]
+```
+
+It prints the next batch of files and folders with no current note, with what to write, and `flyover import` saves the JSON. The notes belong to the repo, not a branch: each is tied to the file's contents (a folder's to its list of files) and marked out of date when that changes, so running it again only redoes what changed. A review's own "what it is" lines go into the same notes. The `flyover-describe` skill runs the batches for you; link it like the review skill:
+
+```bash
+ln -s "$PWD/skills/flyover-describe" ~/.claude/skills/flyover-describe
+```
 
 ### With another agent
 
@@ -111,6 +125,8 @@ Any agent that can run shell commands works: have it run `flyover export`, follo
 `src-tauri/` wraps the same app in a window of its own (built with Tauri), with a menu bar and File › Open Repo… using the system folder picker. It runs on macOS, Windows and Linux (the Windows and Linux builds are untested so far).
 
 **Download:** installers (macOS `.dmg`, Windows `.msi` / `.exe`, Linux `.deb`, `.rpm` and `.AppImage`) are attached to each [GitHub release](https://github.com/davidfig/code-flyover/releases). They're unsigned, so macOS and Windows will warn the first time you open one. You need Node.js and git installed.
+
+**Updates:** the downloaded app keeps itself up to date (on Linux, the AppImage; `.deb` and `.rpm` installs update with a new download). It checks for a new release at start and every six hours, downloads it in the background, then offers **Restart to update**; nothing installs until you click it. **Check for Updates…** (in the Code Flyover menu on macOS, Help on Windows and Linux) checks now. Updates are signed, and the app refuses any that the project's update key didn't sign. A copy you build yourself doesn't update itself.
 
 **Build it yourself:**
 
@@ -125,7 +141,7 @@ Without the first step and `--config`, `cargo tauri build` makes an app that run
 
 On launch the app uses a server already running on port 5197, or starts one. On macOS and Linux that goes through your login shell, so `node` and `git` are found as they are in your terminal; on Windows `node` is looked up on the PATH (the Node.js and git installers add themselves to it; restart the app after installing). If the server can't start, the window shows its output. Its log is `~/.code-flyover/app-server.log`.
 
-**Releasing:** push a tag such as `v0.1.0` (matching `version` in `src-tauri/tauri.conf.json`). The workflow in `.github/workflows/release.yml` builds every platform and attaches the installers to a draft release.
+**Releasing:** push a tag such as `v0.1.0` (matching `version` in `src-tauri/tauri.conf.json`). The workflow in `.github/workflows/release.yml` builds every platform and attaches the installers to a draft release, with the signed update bundles and the `latest.json` the apps read. Installed apps only see a release once you publish the draft, so check it first. The build needs the update key in the `TAURI_SIGNING_PRIVATE_KEY` repository secret, and fails a tag whose version doesn't match the config (the feed would otherwise offer apps an update to themselves forever). To pull a bad release, move it back to draft and release a fix with a higher version; apps never downgrade.
 
 ## Your data
 
@@ -144,11 +160,11 @@ There's no build step: the server is Vite with a small API (`vite.config.ts`, `s
 | Folder | What's in it |
 |---|---|
 | `analyzer/` | Reads git, finds dependencies, runs the architecture checks |
-| `server/` | The API and the `export`/`import` commands |
+| `server/` | The API, the `export`/`describe`/`import` commands and the repo's notes |
 | `web/` | The map: layout, WebGL rendering, GPU text (`web/text/`), the side panel |
 | `shared/` | Types shared by the server and the page |
 | `src-tauri/` | The desktop app |
-| `skills/` | The Claude Code skill |
+| `skills/` | The Claude Code skills |
 
 [docs/design.md](docs/design.md) explains how the map, the checks and the descriptions work, and why.
 

@@ -87,7 +87,7 @@ function fromLocalStorage(): Record<string, unknown> {
   try {
     const w = Number(localStorage.getItem('semantic-zoom:panelWidth'))
     if (w) old.panelWidth = w
-    for (const k of ['showImpacted', 'dimUnchanged', 'showTests', 'showLocales', 'showUnchanged', 'showTiming']) {
+    for (const k of ['showImpacted', 'dimUnchanged', 'showCode', 'showTests', 'showLocales', 'showDocs', 'showUnchanged', 'showTiming']) {
       const v = localStorage.getItem('semantic-zoom:' + k)
       if (v !== null) old[k] = v === 'true'
     }

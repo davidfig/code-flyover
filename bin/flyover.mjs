@@ -2,6 +2,7 @@
 // flyover [folder]: opens the app on a repo's branches.
 // flyover --serve:   only starts the server (the desktop app runs this, src-tauri/src/lib.rs).
 // flyover export …:  what an outside AI needs to describe and review a branch (server/review-cli.ts)
+// flyover describe …: the next batch of files and folders an outside AI should write the repo's notes for
 // flyover import …:  saves what it wrote, for the app to show
 //
 // Adds the git repo at [folder] (default: the current folder) to the app's list and opens it in the browser. Starts
@@ -16,7 +17,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-if (process.argv[2] === 'export' || process.argv[2] === 'import') {
+if (process.argv[2] === 'export' || process.argv[2] === 'import' || process.argv[2] === 'describe') {
   // Run from the caller's folder, so relative paths and the checked-out branch are theirs. No server needed.
   const tsx = path.join(appDir, 'node_modules', '.bin', 'tsx')
   const r = spawnSync(tsx, [path.join(appDir, 'server', 'review-cli.ts'), ...process.argv.slice(2)], { stdio: 'inherit' })

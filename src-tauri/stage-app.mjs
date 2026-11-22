@@ -14,7 +14,8 @@ const out = path.join(here, 'app')
 
 rmSync(out, { recursive: true, force: true })
 mkdirSync(out, { recursive: true })
-for (const entry of ['bin', 'server', 'analyzer', 'shared', 'web', 'public', 'index.html', 'vite.config.ts', 'tsconfig.json']) {
+// skills/: the /flyover-review skill, which Install Claude Code Skill… (install.rs) copies into ~/.claude/skills.
+for (const entry of ['bin', 'server', 'analyzer', 'shared', 'skills', 'web', 'public', 'index.html', 'vite.config.ts', 'tsconfig.json']) {
   if (existsSync(path.join(root, entry))) cpSync(path.join(root, entry), path.join(out, entry), { recursive: true })
 }
 

@@ -4,7 +4,7 @@
 // with their box.
 // No rendering or camera library: see web/gl/.
 
-import type { Analysis, ChangeSet, FileEdge, FileInfo, FileRole } from '../shared/types.ts'
+import type { Analysis, ChangeSet, FileEdge, FileInfo, FileRole, RepoNote } from '../shared/types.ts'
 import { buildMap, roleOf, type MapNode } from './layout.ts'
 import { CODE_PX, colW, settings, type SettingKey } from './settings.ts'
 import { Camera, type Rect } from './gl/camera.ts'
@@ -38,6 +38,8 @@ const CACHE_GLYPHS_PER_FRAME = 300_000
 const CACHE_REBUILD_MS = 400
 /** The deepest zoom: text at this many times its normal size (it scales with its box, so it never re-wraps). */
 const TEXT_MAX_SCALE = () => settings.maxZoomPercent / 100
+/** Double-click's zoom: text at this many times its normal size, unless the box must shrink to fit the window. */
+const TEXT_READ_SCALE = () => settings.readZoomPercent / 100
 /** Labels fade in between these widths, instead of popping. */
 const LABEL_FROM_PX = 40
 const LABEL_FULL_PX = 72
@@ -61,9 +63,13 @@ export interface MapOptions {
   showImpacted: boolean
   dimUnchanged: boolean
   /** tests (unit and e2e) on the map */
+  /** source and generated files on the map */
+  showCode: boolean
   showTests: boolean
   /** translation files on the map */
   showLocales: boolean
+  /** Markdown and text files on the map */
+  showDocs: boolean
   /** files the branch doesn't touch on the map */
   showUnchanged: boolean
   /** the frame-timing readout (see perf.ts) */
@@ -213,7 +219,7 @@ export class ZoomMap {
   ancestors: MapNode[][] = []
   impacted = new Set<number>()
   violations = new Set<string>()
-  opts: MapOptions = { showImpacted: true, dimUnchanged: false, showTests: false, showLocales: false, showUnchanged: false, showTiming: false }
+  opts: MapOptions = { showImpacted: true, dimUnchanged: false, showCode: true, showTests: false, showLocales: false, showDocs: true, showUnchanged: false, showTiming: false }
   selected: MapNode | null = null
   /** the selected file's neighbours on the map (see linksOf) */
   private linked: { imports: MapNode[]; importers: MapNode[] } = { imports: [], importers: [] }
@@ -357,14 +363,37 @@ export class ZoomMap {
     resize()
   }
 
+  /** whether the map lays out every file (Whole repo, or a branch that changes nothing) */
+  wholeRepo = false
+
+  /**
+   * Files on the map have new text (unchanged files' text, read for Whole repo): lay their text out again. The
+   * boxes stay where they are (the treemap is sized by line counts, not text).
+   */
+  textsChanged() {
+    if (!this.a) return
+    this.text.setFiles(this.fileNodes.filter((n) => this.a.files[n.file!].hunks?.length).map((n) => ({ id: n.file!, file: this.a.files[n.file!] })))
+    this.cache.reset()
+    this.prefetchText()
+    this.schedule()
+  }
+
   load(a: Analysis) {
     this.a = a
     const hide = new Set<FileRole>()
+    if (!this.opts.showCode) hide.add('source').add('generated')
     if (!this.opts.showTests) hide.add('test')
     if (!this.opts.showLocales) hide.add('locale')
+    if (!this.opts.showDocs) hide.add('doc')
     // The column layout takes the map's shape.
     const view = { width: this.camera.width, height: this.camera.height }
-    const m = buildMap(a, hide, this.opts.showUnchanged ? undefined : touched(a, this.opts.showImpacted, hide), view)
+    // A branch that changes nothing (main, level with its remote) shows the whole repo rather than an empty map. Not
+    // one whose changes are only hidden (Code off on a code-only branch): that map is empty, as asked.
+    const nothingChanged = !a.files.some((f) => f.status !== 'unchanged')
+    const whole = this.opts.showUnchanged || nothingChanged
+    const shown = whole ? undefined : touched(a, this.opts.showImpacted, hide)
+    this.wholeRepo = whole
+    const m = buildMap(a, hide, shown, view)
     this.root = m.root
     this.nodes = m.nodes
     this.fileNodes = m.fileNodes
@@ -391,7 +420,7 @@ export class ZoomMap {
     const widths = this.fileNodes.map((n) => n.w).sort((x, y) => x - y)
     // In the column view boxes widen to fill space, but the text shouldn't grow with them: measure it against the
     // column width. In the treemap, against the median file.
-    this.medianFileW = this.opts.showUnchanged ? (widths[Math.floor(widths.length / 2)] ?? 1) : colW()
+    this.medianFileW = whole ? (widths[Math.floor(widths.length / 2)] ?? 1) : colW()
     // Text scales with its box at every zoom (so a line always wraps at the same place); the deepest zoom stops it
     // at TEXT_MAX_SCALE times its normal size.
     this.camera.maxScale = (TEXT_MAX_SCALE() * DIFF_W()) / this.medianFileW
@@ -548,7 +577,7 @@ export class ZoomMap {
   setOptions(o: Partial<MapOptions>) {
     const changes = (k: keyof MapOptions) => o[k] !== undefined && o[k] !== this.opts[k]
     const relayout =
-      changes('showTests') || changes('showLocales') || changes('showUnchanged')
+      changes('showCode') || changes('showTests') || changes('showLocales') || changes('showDocs') || changes('showUnchanged')
     Object.assign(this.opts, o)
     this.timing.enabled = this.opts.showTiming
     // Showing or hiding files changes the layout.
@@ -589,7 +618,8 @@ export class ZoomMap {
 
   /**
    * Double-click: zoom so the box fills the window's width with its top at the window's top, the way you'd open
-   * a page to read it. A file's diff starts from its first line.
+   * a page to read it, but no closer than the Reading size: on a wide screen, filling the width would blow the text
+   * up. A box narrower than the window is centred in it. A file's diff starts from its first line.
    */
   readBox(n: MapNode) {
     this.zoomed = true
@@ -600,7 +630,15 @@ export class ZoomMap {
     if (st) st.offset = 0
     // A negative margin: the box is a few px wider than the window and starts a few px above it, so its selection
     // outline (SELECT_PX, drawn inside the box's edge) sits just off screen instead of framing the text.
-    this.camera.flyTo(this.camera.fittedWidth({ x: n.x, y: n.y, w: n.w, h: n.h }, -(SELECT_PX + 1)), FLY_MS())
+    const margin = -(SELECT_PX + 1)
+    const to = this.camera.fittedWidth({ x: n.x, y: n.y, w: n.w, h: n.h }, margin)
+    const read = Math.min(Math.max((TEXT_READ_SCALE() * DIFF_W()) / this.medianFileW, this.camera.minScale), this.camera.maxScale)
+    if (to.scale > read) {
+      to.scale = read
+      to.x = n.x + n.w / 2 - this.camera.width / 2 / read
+      to.y = n.y - margin / read
+    }
+    this.camera.flyTo(to, FLY_MS())
     this.schedule()
   }
 
@@ -862,25 +900,35 @@ export class ZoomMap {
   private tipHtml(n: MapNode): string | null {
     const review = this.a?.review
     const stale = review && review.headSha !== this.a.headSha ? ', for an older commit' : ''
+    // The repo's own notes (`flyover describe`): what a file or folder is on any branch, marked when it has changed since.
+    const repoNote = (r: RepoNote | undefined, changedSince: string) => (r ? { about: r.about, stale: r.stale ? `, ${changedSince}` : '' } : null)
     if (n.kind === 'file') {
       const path = this.a.files[n.file!].path
       const note = review?.files?.[path]
-      if (!note) return null
-      return (
-        `<div class="tp">${esc(path)}</div>` +
-        (note.about ? `<div class="ta">${esc(note.about)}</div>` : '') +
-        (note.change ? `<div class="tc"><b>In this branch:</b> ${esc(note.change)}</div>` : '') +
-        `<div class="tw">AI-written${stale}</div>`
-      )
+      const own = repoNote(this.a.notes?.files[path], 'and the file has changed since')
+      if (note) {
+        const about = note.about || own?.about
+        return (
+          `<div class="tp">${esc(path)}</div>` +
+          (about ? `<div class="ta">${esc(about)}</div>` : '') +
+          (note.change ? `<div class="tc"><b>In this branch:</b> ${esc(note.change)}</div>` : '') +
+          `<div class="tw">AI-written${stale}</div>`
+        )
+      }
+      if (!own) return null
+      return `<div class="tp">${esc(path)}</div><div class="ta">${esc(own.about)}</div><div class="tw">AI-written${own.stale}</div>`
     }
     if (n.kind === 'module') {
       const mod = this.a.model.modules.find((m) => m.id === n.module)
-      if (!mod?.description) return null
-      return `<div class="tp">${esc(mod.label || mod.id)}</div><div class="ta">${esc(mod.description)}</div><div class="tw model">From the architecture model</div>`
+      // An inferred module has no description of its own: it falls through to the notes on its folder below.
+      if (mod?.description)
+        return `<div class="tp">${esc(mod.label || mod.id)}</div><div class="ta">${esc(mod.description)}</div><div class="tw model">From the architecture model</div>`
     }
     const about = review?.folders?.[n.path]
-    if (!about) return null
-    return `<div class="tp">${esc(n.path)}/</div><div class="ta">${esc(about)}</div><div class="tw">AI-written${stale}</div>`
+    if (about) return `<div class="tp">${esc(n.path)}/</div><div class="ta">${esc(about)}</div><div class="tw">AI-written${stale}</div>`
+    const own = repoNote(this.a.notes?.folders[n.path], 'and files have been added or removed since')
+    if (!own) return null
+    return `<div class="tp">${esc(n.path)}/</div><div class="ta">${esc(own.about)}</div><div class="tw">AI-written${own.stale}</div>`
   }
 
   /** The innermost label at (x, y) CSS px (they're drawn outermost first; a nested one sits over its parent's box). */

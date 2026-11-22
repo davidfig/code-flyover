@@ -38,7 +38,7 @@ export interface FileInfo {
   role: FileRole
 }
 
-export type FileRole = 'source' | 'test' | 'locale' | 'generated'
+export type FileRole = 'source' | 'test' | 'locale' | 'generated' | 'doc'
 
 export type EdgeState = 'both' | 'added' | 'removed'
 
@@ -114,7 +114,7 @@ export interface Analysis {
   /** files that transitively import a changed file (indexes into files) */
   impacted: number[]
   findings: Finding[]
-  /** changed files the map leaves out (docs, assets, locales), by kind */
+  /** changed files the map leaves out (assets, config, anything not code or docs), by kind */
   otherChanges: { path: string; status: FileStatus; add: number; del: number }[]
   /** what the branch does, in words, for the zoomed-out map (AI-written; absent if not generated) */
   changes?: ChangeSet
@@ -122,6 +122,21 @@ export interface Analysis {
   uncommitted?: string
   /** an outside AI's review of the branch (`flyover import`): its findings, kept apart from the analyzer's */
   review?: Review
+  /** the repo's own notes on what each file and folder is (`flyover describe`, server/notes.ts), for those at the head */
+  notes?: RepoNotes
+}
+
+/** An AI's sentence about what a file or folder is: the repo's, not a branch's. */
+export interface RepoNote {
+  about: string
+  by: string
+  /** written for other contents: the file has changed since, or files were added to or removed from the folder */
+  stale?: true
+}
+
+export interface RepoNotes {
+  files: Record<string, RepoNote>
+  folders: Record<string, RepoNote>
 }
 
 /** An AI review written outside the app (say, in a Claude Code session) and imported with `flyover import`. */

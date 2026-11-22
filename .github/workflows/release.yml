@@ -1,6 +1,16 @@
 # Builds the desktop app for macOS, Windows and Linux and attaches the installers to a draft GitHub release.
 # Push a tag like v0.1.0 (it should match "version" in src-tauri/tauri.conf.json), then review and publish the draft.
 # Also runnable by hand from the Actions tab, which builds and uploads to a draft release for the version in the config.
+#
+# Updates (src-tauri/src/update.rs): builds turn on the `updater` feature with src-tauri/tauri.updater.conf.json, which
+# has the feed's address and the update key's public half. Each platform's update bundle (the Mac .app.tar.gz, the
+# Windows installers, the AppImage) is signed with the private half, and tauri-action adds a latest.json listing them
+# to the release. Installed apps read releases/latest/download/latest.json, so publishing the draft is what ships an
+# update, and apps never see a draft.
+#
+# Repository secrets: TAURI_SIGNING_PRIVATE_KEY (contents of the key file `cargo tauri signer generate` wrote), and
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD if the key has one. Lose the key and installed copies can't be updated any more:
+# they only accept bundles it signed.
 name: Release desktop app
 
 on:
@@ -47,12 +57,29 @@ jobs:
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
+      # The feed offers latest.json's version to every app older than it, so the app has to be that version too, or
+      # it would be offered an update to itself forever.
+      - name: Version matches the tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          v="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          [[ "v$v" == "$GITHUB_REF_NAME" ]] || { echo "::error::tauri.conf.json says $v but the tag is $GITHUB_REF_NAME"; exit 1; }
+
+      - name: Update signing key
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: '[[ -n "$KEY" ]] || { echo "::error::Set the TAURI_SIGNING_PRIVATE_KEY secret (see the top of this file)"; exit 1; }'
+
       - name: Bundle the server (Vite and the app's files)
         run: node src-tauri/stage-app.mjs
 
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: cargo tauri
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
@@ -62,4 +89,7 @@ jobs:
           assetNamePattern: 'Code-Flyover-[platform]-[arch][ext]'
           releaseDraft: true
           prerelease: false
-          args: --config src-tauri/tauri.bundle.conf.json ${{ matrix.args }}
+          # latest.json: one entry per platform, merged across the jobs; Windows updates with the NSIS installer.
+          uploadUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.updater.conf.json --features updater ${{ matrix.args }}

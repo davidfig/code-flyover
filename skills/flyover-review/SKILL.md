@@ -5,7 +5,7 @@ description: Review the current branch (or a named one) and put the review on th
 
 # Review a branch for the Code Flyover map
 
-Code Flyover (`~/Programming/code-flyover`) is the user's code-review map. It shows two things an AI writes:
+Code Flyover is the user's code-review map. It shows two things an AI writes:
 
 - **changes**: what the branch does, as 3 to 8 titled groups of diff hunks;
 - **findings**: the bugs and risks you find, shown under "AI review", apart from the analyzer's architecture checks;
@@ -14,7 +14,7 @@ Code Flyover (`~/Programming/code-flyover`) is the user's code-review map. It sh
 
 You write both into one JSON file and import it. The app shows it within a few seconds.
 
-The command is `node ~/Programming/code-flyover/bin/flyover.mjs` (shortened to `flyover` below; use the full form unless `flyover` is on the PATH).
+The command is `flyover` (on the PATH after Code Flyover's Install Claude Code Skill… menu item, or `npm link` in a checkout; in a checkout without it, run `node bin/flyover.mjs` from the checkout's folder).
 
 ## Steps
 
@@ -25,4 +25,4 @@ The command is `node ~/Programming/code-flyover/bin/flyover.mjs` (shortened to `
 5. **Import.** Run `flyover import <file>` in the repo (or pass the repo folder after the file). If it reports dropped hunk ids, uncovered hunks, unknown paths or undescribed files, fix the file and import again. If it says the branch moved, export again and redo the file.
 6. **Report** to the user in a few lines: how many changes and findings, the most serious finding in one sentence, and that the app is already showing them.
 
-Don't commit anything. The import writes only to `~/.code-flyover`.
+Don't commit anything. The import writes only to `~/.code-flyover`. The files' "what it is" lines and the folder sentences also go into the repo's own notes, so other branches show them too; `/flyover-describe` covers the files no branch changed.

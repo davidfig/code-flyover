@@ -6,6 +6,9 @@
 // flyover import <file.json> [folder]
 //   Checks that file against the code (hunk ids, coverage, paths, the head commit) and saves it where the app looks
 //   (~/.code-flyover, server/api.ts). The app shows it within a few seconds (web/main.ts, showNewlySaved).
+// flyover describe [folder] [--at <ref>] [--under <dir>] [--batch <n>]
+//   The next batch of files and folders with no current note in the repo's own notes (server/notes.ts): what each is,
+//   on any branch. The AI writes them and imports them with `flyover import`, which tells the two kinds of file apart.
 //
 // Run through bin/flyover.mjs, which hands these two commands to tsx.
 
@@ -15,6 +18,7 @@ import { execFileSync } from 'node:child_process'
 import { branchSummary, CHANGE_RULES, checkChanges, describable, renderDiff } from '../analyzer/describe.ts'
 import { readFiles } from '../analyzer/git.ts'
 import { addRepo, analysisFor, defaultBase, loadReview, saveDescriptions, saveReview } from './api.ts'
+import { describedAt, notesAt, saveNotes } from './notes.ts'
 import type { Analysis, FileNote, Finding, Review, Severity } from '../shared/types.ts'
 
 /** What the AI writes (and `import` reads). */
@@ -29,8 +33,8 @@ interface ReviewFile {
   folders?: { path: string; about: string }[]
 }
 
-/** The changed files to describe: source and tests (translations and generated files say nothing worth a tooltip). */
-const toDescribe = (a: Analysis) => a.files.filter((f) => f.status !== 'unchanged' && (f.role === 'source' || f.role === 'test'))
+/** The changed files to describe: source, tests and docs (translations and generated files say nothing worth a tooltip). */
+const toDescribe = (a: Analysis) => a.files.filter((f) => f.status !== 'unchanged' && (f.role === 'source' || f.role === 'test' || f.role === 'doc'))
 
 /**
  * The folders to describe: every folder above a changed file, less a module's own folder when the architecture model
@@ -211,7 +215,7 @@ function exportInput() {
     'Changed files on the map (paths you can use in findings; any folder above them works too):',
     '',
     ...changed.map((f) => `- ${f.path} (${f.status}, ${f.role}, +${f.add} −${f.del})`),
-    ...(a.otherChanges.length ? ['', 'Also changed, but not on the map (docs, assets, locales):', '', ...a.otherChanges.map((o) => `- ${o.path}`)] : []),
+    ...(a.otherChanges.length ? ['', 'Also changed, but not on the map (assets, config and other files):', '', ...a.otherChanges.map((o) => `- ${o.path}`)] : []),
     '',
     '## The source diff, in numbered hunks',
     '',
@@ -233,6 +237,8 @@ function importReview() {
   } catch (e) {
     fail(`Couldn't read ${fileArg}: ${e instanceof Error ? e.message : e}`)
   }
+  const maybeNotes = file as unknown as Partial<NotesFileIn>
+  if (typeof maybeNotes.at === 'string' && !file.head) return importNotes(maybeNotes as NotesFileIn, fileArg, folderArg)
   for (const k of ['by', 'head', 'base', 'headSha'] as const) if (typeof file[k] !== 'string' || !file[k]) fail(`${fileArg} needs "${k}" (copy it from \`flyover export\`)`)
   if (!file.changes && !file.findings && !file.files && !file.folders) fail(`${fileArg} has none of "changes", "findings", "files" or "folders"`)
   const folder = path.resolve(folderArg ?? process.cwd())
@@ -316,11 +322,181 @@ function importReview() {
     }
 
     saveReview(folder, file.head, file.base, review)
+
+    // What each file and folder is doesn't depend on the branch: the repo's notes keep it (server/notes.ts), tied to
+    // the files as they are at this head, so other branches where they're the same show it too.
+    if (file.files || file.folders) {
+      const repo = addRepo(folder)
+      const abouts = Object.fromEntries(Object.entries(file.files ? review.files ?? {} : {}).filter(([, n]) => n.about).map(([p, n]) => [p, n.about]))
+      const saved = saveNotes(repo.id, repo.path, a.headSha, file.by, abouts, file.folders ? review.folders ?? {} : {})
+      if (saved.files || saved.folders) console.log(`repo notes: ${saved.files} files and ${saved.folders} folders kept for every branch where they're unchanged`)
+    }
   }
   console.log(`Saved for ${file.head} against ${file.base}. The app shows it within a few seconds, without moving the map.`)
+}
+
+// ---------- the repo's own notes: flyover describe ----------
+
+/** What the AI writes for `flyover describe` (and `import` reads): told apart from a review by `at` and no `head`. */
+interface NotesFileIn {
+  by: string
+  at: string
+  files?: { path: string; about: string }[]
+  folders?: { path: string; about: string }[]
+}
+
+/** Files that get a note: the source and test files on the map (translations and generated files say nothing worth one). */
+const noteable = (a: Analysis) => a.files.filter((f) => f.status !== 'deleted' && (f.role === 'source' || f.role === 'test')).map((f) => f.path)
+
+/** Folders that get a note: every folder above a noteable file, less a module's own folder that the model describes. */
+function noteableFolders(a: Analysis, files: string[]): string[] {
+  const described = new Set(a.model.modules.filter((m) => m.description).flatMap((m) => m.paths.map((p) => p.replace(/\/$/, ''))))
+  const out = new Set<string>()
+  for (const p of files) {
+    const parts = p.split('/')
+    for (let i = 1; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join('/')
+      if (!described.has(dir)) out.add(dir)
+    }
+  }
+  return [...out].sort()
+}
+
+const DESCRIBE_BATCH = 40
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+function describeRepo() {
+  const atOpt = option('--at')
+  const under = option('--under')?.replace(/^\.\/|\/$/g, '')
+  const batch = Number(option('--batch') ?? DESCRIBE_BATCH)
+  if (!Number.isInteger(batch) || batch < 1) fail('--batch needs a whole number')
+  const folder = path.resolve(args[0] ?? process.cwd())
+  const repo = addRepo(folder)
+  let sha: string
+  try {
+    sha = execFileSync('git', ['-C', folder, 'rev-parse', '--verify', (atOpt ?? 'HEAD') + '^{commit}'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+  } catch {
+    fail(`No commit ${atOpt ?? 'HEAD'} in ${folder}`)
+  }
+  const a = load(folder, sha, sha)
+  const inScope = (p: string) => !under || p === under || p.startsWith(under + '/')
+  const files = noteable(a).filter(inScope)
+  const folders = noteableFolders(a, files).filter((d) => !under || inScope(d))
+  if (!files.length) fail(under ? `No source or test files under ${under}` : 'No source or test files on the map')
+  const done = describedAt(repo.id, repo.path, sha)
+  const notes = notesAt(repo.id, repo.path, sha)
+  const todoFiles = files.filter((p) => !done.files.has(p))
+  const todoFolders = folders.filter((d) => !done.folders.has(d))
+  const progress = `${files.length - todoFiles.length} of ${plural(files.length, 'file')} and ${folders.length - todoFolders.length} of ${plural(folders.length, 'folder')}${under ? ` under ${under}` : ''} have a current note.`
+  if (!todoFiles.length && !todoFolders.length) {
+    console.log(`Nothing to describe: ${progress}`)
+    return
+  }
+
+  // This batch: the next files in path order (so a folder's files come together), and the folders above them. Once
+  // every file has a note, the folders left.
+  const batchFiles = todoFiles.slice(0, batch)
+  const above = new Set(batchFiles.flatMap((p) => p.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))))
+  const batchFolders = batchFiles.length ? todoFolders.filter((d) => above.has(d)) : todoFolders.slice(0, batch)
+  const texts = readFiles(repo.path, sha, [...new Set([...batchFiles, ...batchFolders.flatMap((d) => files.filter((p) => p.startsWith(d + '/') && !p.slice(d.length + 1).includes('/')))])])
+  const lines = (p: string) => a.files.find((f) => f.path === p)?.lines ?? 0
+  const stale = (r: Record<string, { stale?: true }>, p: string) => (r[p]?.stale ? ' (its note is out of date: rewrite it)' : '')
+
+  const folderEvidenceFor = (dir: string) => {
+    const direct = files.filter((p) => p.startsWith(dir + '/') && !p.slice(dir.length + 1).includes('/'))
+    const subs = [...new Set(files.filter((p) => p.startsWith(dir + '/') && p.slice(dir.length + 1).includes('/')).map((p) => p.slice(dir.length + 1).split('/')[0]))].sort()
+    const out = [`### ${dir}${stale(notes.folders, dir)}`]
+    if (subs.length) out.push(`Folders: ${subs.map((s) => (notes.folders[`${dir}/${s}`] && !notes.folders[`${dir}/${s}`].stale ? `${s} (${notes.folders[`${dir}/${s}`].about})` : s)).join('; ')}`)
+    for (const p of direct.slice(0, 40)) {
+      const note = notes.files[p] && !notes.files[p].stale ? notes.files[p].about : headerOf(texts.get(p) ?? '')
+      out.push(`- ${p.slice(dir.length + 1)}${note ? `: ${note}` : ''}`)
+    }
+    if (direct.length > 40) out.push(`- and ${direct.length - 40} more files`)
+    out.push('')
+    return out
+  }
+
+  const template: NotesFileIn = {
+    by: '<your model id> via <where you ran>, e.g. claude-sonnet-5-5 via Claude Code',
+    at: sha,
+    files: [{ path: batchFiles[0] ?? 'path/to/file.ts', about: '…' }],
+    folders: [{ path: batchFolders[0] ?? 'path/to', about: '…' }],
+  }
+  const more = todoFiles.length - batchFiles.length
+  const out = [
+    `# Code Flyover: describe ${a.repo}${under ? `, ${under}` : ''}`,
+    '',
+    `These notes are the repo's own, not a branch's: what each file and folder is, shown when someone hovers over its name on the map, on any branch. Each is tied to the file's contents (or the folder's list of files) at commit ${sha}, and marked out of date when that changes.`,
+    '',
+    `${progress} This batch: ${plural(batchFiles.length, 'file')} and ${plural(batchFolders.length, 'folder')}.${more > 0 ? ` ${more} more files are left: when this batch is imported, run \`flyover describe\` again for the next one.` : ''}`,
+    '',
+    'Write one JSON file, then run `flyover import <file>` in the repo (or pass the repo\'s folder after the file). The import tells you what it skipped; fix the file and import again.',
+    '',
+    '## The file to write',
+    '',
+    '```json',
+    JSON.stringify(template, null, 2),
+    '```',
+    '',
+    'Copy `at` exactly. Read the files as they are at that commit: if the working tree differs from it (uncommitted work, another branch), use `git show ' + sha.slice(0, 12) + ':<path>`.',
+    '',
+    '## files: what each file is for',
+    '',
+    'One sentence for each file below: its job in the codebase, not its contents in full ("Syncs the local library with the account\'s cloud copies"). Write it from reading the file: enough of it to know its job (the opening comment, what it exports, its main functions; the whole file when those leave it unclear). Never from its name alone. Describe what it is now, not its history or what a branch did.',
+    '',
+    'If you can\'t tell what a file is for after reading it, leave it out rather than guess.',
+    '',
+    ...batchFiles.map((p) => {
+      const head = headerOf(texts.get(p) ?? '')
+      return `- ${p} (${lines(p)} lines)${stale(notes.files, p)}${head ? `\n  opens with: ${head}` : ''}`
+    }),
+    '',
+    '## folders: what each folder holds',
+    '',
+    'One sentence for each folder below: what is kept in it ("The search index: the worker that builds it, and querying it"). Write it from the evidence under each folder (its subfolders, with their notes where they have one, and its files, with their notes or opening comments) and from the files you read for this batch. Where that evidence is too thin to say what the folder holds, leave it out rather than guess from its name.',
+    '',
+    ...(batchFolders.length ? batchFolders.flatMap(folderEvidenceFor) : ['- none in this batch', '']),
+    ...(a.model.modules.some((m) => m.description) ? ['## The architecture model\'s modules (already described; for context, don\'t rewrite them)', '', ...a.model.modules.filter((m) => m.description).map((m) => `- ${m.label || m.id} (${m.paths.join(', ')}): ${m.description}`), ''] : []),
+  ]
+  process.stdout.write(out.join('\n') + '\n')
+}
+
+function importNotes(file: NotesFileIn, fileArg: string, folderArg?: string) {
+  if (typeof file.by !== 'string' || !file.by) fail(`${fileArg} needs "by"`)
+  if (!file.files && !file.folders) fail(`${fileArg} has neither "files" nor "folders"`)
+  const folder = path.resolve(folderArg ?? process.cwd())
+  const repo = addRepo(folder)
+  const a = load(folder, file.at, file.at)
+  const mapFiles = new Set(noteable(a))
+  const asList = (v: unknown, name: string) => {
+    if (v === undefined) return []
+    if (!Array.isArray(v)) fail(`"${name}" must be a list`)
+    return v as { path?: unknown; about?: unknown }[]
+  }
+  const files: Record<string, string> = {}
+  const notOnMap: string[] = []
+  for (const f of asList(file.files, 'files')) {
+    const p = String(f?.path ?? '')
+    if (!mapFiles.has(p)) notOnMap.push(p)
+    else files[p] = String(f?.about ?? '')
+  }
+  const folders: Record<string, string> = {}
+  for (const f of asList(file.folders, 'folders')) folders[String(f?.path ?? '').replace(/\/$/, '')] = String(f?.about ?? '')
+  const saved = saveNotes(repo.id, repo.path, file.at, file.by, files, folders)
+  console.log(`notes: ${plural(saved.files, 'file')} and ${plural(saved.folders, 'folder')} described`)
+  if (notOnMap.length) console.log(`  dropped paths that aren't source or test files on the map: ${notOnMap.join(', ')}`)
+  if (saved.skipped.length) console.log(`  skipped (empty, or not there at ${file.at.slice(0, 10)}): ${saved.skipped.join(', ')}`)
+  const done = describedAt(repo.id, repo.path, a.headSha)
+  const all = noteable(a)
+  const left = all.filter((p) => !done.files.has(p)).length
+  const leftFolders = noteableFolders(a, all).filter((d) => !done.folders.has(d)).length
+  console.log(left || leftFolders ? `${plural(left, 'file')} and ${plural(leftFolders, 'folder')} still have no current note: run \`flyover describe\` for the next batch.` : 'Every file and folder on the map has a current note.')
+  console.log('The app shows them within a few seconds, on every branch where the file is unchanged.')
 }
 
 const command = args.shift()
 if (command === 'export') exportInput()
 else if (command === 'import') importReview()
-else fail('usage: flyover export [folder] [--head <branch>] [--base <ref>] | flyover import <file.json> [folder]')
+else if (command === 'describe') describeRepo()
+else fail('usage: flyover export [folder] [--head <branch>] [--base <ref>] | flyover describe [folder] [--at <ref>] [--under <dir>] [--batch <n>] | flyover import <file.json> [folder]')

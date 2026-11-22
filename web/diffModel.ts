@@ -141,7 +141,7 @@ export function diffModel(f: FileInfo): DiffModel | null {
     const out: Item[] = []
     sections.forEach((s, i) => {
       gapItems(gaps[i], out, i)
-      out.push({ kind: 'head', s })
+      if (f.status !== 'unchanged') out.push({ kind: 'head', s }) // an unchanged file is one plain run of lines
       for (const r of s.rows) out.push({ kind: 'row', row: r })
     })
     gapItems(gaps[sections.length], out, sections.length)

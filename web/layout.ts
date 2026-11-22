@@ -299,7 +299,7 @@ function fileText(f: FileInfo): { shown: number; full: number } {
     const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(h.header)
     const start = m ? Number(deleted ? m[1] : m[2]) : prevEnd + 1
     gap(prevEnd + 1, start - 1)
-    shown += HEAD_H
+    if (f.status !== 'unchanged') shown += HEAD_H
     let count = 0
     for (const l of h.lines) {
       shown += visualRows(l.s) * ROW_H
@@ -309,7 +309,7 @@ function fileText(f: FileInfo): { shown: number; full: number } {
   }
   if (fileLines) gap(prevEnd + 1, fileLines.length)
   // Every hidden line shown: its rows in, its bars out.
-  const bars = shown - f.hunks.reduce((t, h) => t + HEAD_H + h.lines.reduce((u, l) => u + visualRows(l.s) * ROW_H, 0), 0)
+  const bars = shown - f.hunks.reduce((t, h) => t + (f.status !== 'unchanged' ? HEAD_H : 0) + h.lines.reduce((u, l) => u + visualRows(l.s) * ROW_H, 0), 0)
   return { shown, full: shown - bars + hidden }
 }
 

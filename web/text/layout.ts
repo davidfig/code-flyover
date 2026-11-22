@@ -19,7 +19,8 @@ const NUM_FONT_PX = 11
 const PAD_RIGHT = 8
 
 /** What a click on a gap bar's button does. */
-export type GapAction = 'down' | 'up' | 'all'
+/** A gap bar's buttons: more lines down or up, the whole gap, or every gap in the file (the whole file). */
+export type GapAction = 'down' | 'up' | 'all' | 'file'
 
 export interface ButtonHit {
   gap: number
@@ -128,6 +129,7 @@ export function layoutDiff(model: DiffModel, m: FaceMetrics, width: number): Lai
   const perFirst = Math.max(8, Math.floor((width - PAD_RIGHT - firstX) / ch))
   const perCont = Math.max(8, Math.floor((width - PAD_RIGHT - contX) / ch))
 
+  const closedGaps = model.gaps.filter((g) => g && g.to - g.from + 1 - g.top - g.bottom > 0).length
   for (const it of model.items()) {
     if (it.kind === 'head') y = head(it, y)
     else if (it.kind === 'bar') y = bar(it, y)
@@ -229,6 +231,8 @@ export function layoutDiff(model: DiffModel, m: FaceMetrics, width: number): Lai
       if (g.where !== 'end') button(`↑ ${STEP}`, 'up')
       button(`All ${hidden}`, 'all')
     }
+    // With other gaps still closed, one click opens them all: the whole file.
+    if (closedGaps > 1) button('Whole file', 'file')
     write(`${hidden} unchanged line${hidden === 1 ? '' : 's'}`, x + 4, by, BAR_FONT_PX, rgba(0x7a7568))
     return top + BAR_H
   }
@@ -238,6 +242,10 @@ export function layoutDiff(model: DiffModel, m: FaceMetrics, width: number): Lai
 
 /** Applies a gap bar's button to the model. */
 export function expandGap(model: DiffModel, gap: number, action: GapAction): void {
+  if (action === 'file') {
+    for (const g of model.gaps) if (g) g.top = g.to - g.from + 1 - g.bottom
+    return
+  }
   const g = model.gaps[gap]
   if (!g) return
   const hidden = g.to - g.from + 1 - g.top - g.bottom
