@@ -521,6 +521,9 @@ export class ZoomMap {
     if (animate) this.userMoved = false
     this.zoomed = false
     const r = { x: this.root.x, y: this.root.y, w: this.root.w, h: this.root.h }
+    // The fit is clamped to the camera's limits, and the zoom-out limit is the previous fit's: for a bigger map (another
+    // branch, more files shown) it would stop short of the whole map. Lift it first.
+    this.camera.minScale = 0
     const fit = this.camera.fitted(r).scale
     if (Math.abs(fit - this.fitScale) > 1e-9) this.cardsPlaced = false // a new whole-map zoom: place the cards again
     this.fitScale = fit
