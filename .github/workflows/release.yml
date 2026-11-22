@@ -90,6 +90,6 @@ jobs:
           releaseDraft: true
           prerelease: false
           # latest.json: one entry per platform, merged across the jobs; Windows updates with the NSIS installer.
-          uploadUpdaterJson: true
+          includeUpdaterJson: true
           updaterJsonPreferNsis: true
           args: --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.updater.conf.json --features updater ${{ matrix.args }}
