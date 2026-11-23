@@ -8,8 +8,11 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+## 0.1.3 - 2026-11-23
+
 ### Added
 
+- The Mac app is signed with a Developer ID and notarized by Apple, so macOS opens it without a warning.
 - What's New, in the app menu (the Help menu on Windows and Linux) and in Settings, shows this changelog. It's part of
   the app, so it works offline.
 - A changelog page on codeflyover.app.
