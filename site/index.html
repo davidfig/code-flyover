@@ -70,10 +70,16 @@ pre .c{color:#8d887a}
 .checks li::before{content:"";position:absolute;left:0;top:.55em;width:12px;height:3px;background:var(--teal);border-radius:2px}
 .checks em{font-style:normal;color:var(--muted)}
 .dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
-.dl .card.me{border-color:var(--ink)}
+[hidden]{display:none!important}
 .dl .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
 .dl .btn{padding:8px 14px;font-size:14.5px}
 .dl h3 small{font-weight:400;color:var(--muted);font-size:14px}
+.mine{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+.mine-note{color:var(--muted);font-size:15px}
+.link{padding:0;border:0;background:none;color:inherit;font:inherit;font-size:14px;text-decoration:underline;cursor:pointer}
+#dlalt{margin-top:12px}
+.others{display:block;margin:12px 0 0}
+.dl.open{margin-top:14px}
 footer{border-top:1px solid var(--line);padding:32px 0 48px;color:var(--muted);font-size:14px;display:flex;flex-wrap:wrap;gap:12px 24px}
 footer a{color:var(--muted)}
 footer .r{margin-left:auto}
@@ -95,7 +101,7 @@ footer .r{margin-left:auto}
     <h1>Code review on a map.</h1>
     <p class="lead">See what a branch does and where it lands in your architecture from 1000 feet, then zoom through module → folder → file → diff without leaving the picture.</p>
     <div class="cta">
-      <a class="btn p" href="#download">Download</a>
+      <a class="btn p" id="heroDl" href="#download">Download</a>
       <a class="btn s" href="https://github.com/davidfig/code-flyover">View on GitHub</a>
     </div>
     <p class="fine">Free and open source (MIT) · apps for macOS, Windows and Linux, or any browser · everything stays on your machine</p>
@@ -216,11 +222,16 @@ flyover import review.json</pre>
 
   <section id="download" style="padding-top:0">
     <h2>Download</h2>
-    <p class="sub">The desktop app, built for macOS, Windows and Linux. It needs <a href="https://nodejs.org">Node.js</a> 20.19+ and git on your machine. Builds aren't code-signed yet, so your OS may ask you to confirm the first launch.</p>
+    <p class="sub">The desktop app, built for macOS, Windows and Linux. It needs <a href="https://nodejs.org">Node.js</a> 20.19+ and git on your machine. The Mac build is signed and notarized by Apple. The Windows and Linux builds aren't code-signed yet, so Windows may ask you to confirm the first launch.</p>
+    <!-- The script below puts the visitor's build in #mine and tucks the rest behind "Other systems". Without
+         scripts, or on a system it can't tell, every build shows. -->
+    <div class="mine" id="mine" hidden><a class="btn p" id="mineBtn" href="https://github.com/davidfig/code-flyover/releases/latest"></a><span class="mine-note" id="mineNote"></span></div>
+    <p class="fine" id="dlalt" hidden></p>
+    <button class="link others" type="button" id="others" aria-expanded="false" aria-controls="dl" hidden>Other systems</button>
     <div class="dl" id="dl">
-      <div class="card" data-os="mac"><h3>macOS</h3><p>Apple silicon and Intel.</p><div class="btns"><a class="btn s" data-kind="mac-arm" href="https://github.com/davidfig/code-flyover/releases/latest">Apple silicon .dmg</a><a class="btn s" data-kind="mac-intel" href="https://github.com/davidfig/code-flyover/releases/latest">Intel .dmg</a></div></div>
-      <div class="card" data-os="win"><h3>Windows</h3><p>Windows 10 and 11, 64-bit.</p><div class="btns"><a class="btn s" data-kind="win" href="https://github.com/davidfig/code-flyover/releases/latest">Installer .exe</a></div></div>
-      <div class="card" data-os="linux"><h3>Linux</h3><p>64-bit. Pick the package that suits your distro.</p><div class="btns"><a class="btn s" data-kind="appimage" href="https://github.com/davidfig/code-flyover/releases/latest">AppImage</a><a class="btn s" data-kind="deb" href="https://github.com/davidfig/code-flyover/releases/latest">.deb</a></div></div>
+      <div class="card" data-os="mac"><h3>macOS</h3><p>Apple silicon and Intel.</p><div class="btns"><a class="btn s" data-kind="mac-arm" data-label="Download for Mac" data-note="Apple silicon · .dmg" href="https://github.com/davidfig/code-flyover/releases/latest">Apple silicon .dmg</a><a class="btn s" data-kind="mac-intel" data-label="Download for Intel Mac" data-note="Intel · .dmg" href="https://github.com/davidfig/code-flyover/releases/latest">Intel .dmg</a></div></div>
+      <div class="card" data-os="win"><h3>Windows</h3><p>Windows 10 and 11, 64-bit.</p><div class="btns"><a class="btn s" data-kind="win" data-label="Download for Windows" data-note="Windows 10 and 11 · installer" href="https://github.com/davidfig/code-flyover/releases/latest">Installer .exe</a></div></div>
+      <div class="card" data-os="linux"><h3>Linux</h3><p>64-bit. Pick the package that suits your distro.</p><div class="btns"><a class="btn s" data-kind="appimage" data-label="Download for Linux" data-note="64-bit · AppImage" href="https://github.com/davidfig/code-flyover/releases/latest">AppImage</a><a class="btn s" data-kind="deb" href="https://github.com/davidfig/code-flyover/releases/latest">.deb</a></div></div>
     </div>
     <p class="fine" id="dlnote">What changed in each release is in the <a href="/changelog">changelog</a>; every build is on <a href="https://github.com/davidfig/code-flyover/releases">GitHub</a>. Prefer the terminal? <a href="#install">Run it from source</a>.</p>
   </section>
@@ -251,10 +262,49 @@ flyover</pre>
   </footer>
 </div>
 <script>
-// Point each download button at the latest release's file, and highlight the visitor's system.
+// Downloads: the visitor's build up front, the others behind "Other systems", and every button pointed at the
+// latest release's file. Macs default to Apple silicon; Chromium browsers can say when it's an Intel Mac.
 (function(){
-  var ua=navigator.userAgent, os=/Win/.test(ua)?"win":/Mac/.test(ua)?"mac":/Linux|X11/.test(ua)&&!/Android/.test(ua)?"linux":"";
-  var mine=document.querySelector('[data-os="'+os+'"]'); if(mine) mine.classList.add("me");
+  var ua=navigator.userAgent;
+  var os=/Windows/.test(ua)?"win"
+    :/Mac OS X|Macintosh/.test(ua)&&!/iPhone|iPad/.test(ua)&&navigator.maxTouchPoints<2?"mac"
+    :/Linux|X11/.test(ua)&&!/Android/.test(ua)?"linux":"";
+  var all=document.getElementById("dl"), others=document.getElementById("others");
+  var btn=document.getElementById("mineBtn"), alt=document.getElementById("dlalt");
+  var kind=function(k){return all.querySelector('[data-kind="'+k+'"]')};
+  var first={mac:"mac-arm",win:"win",linux:"appimage"}, current="";
+  function show(k){
+    current=k;
+    var a=kind(k);
+    btn.href=a.href; btn.textContent=a.dataset.label;
+    document.getElementById("mineNote").textContent=a.dataset.note;
+    var other=k==="mac-arm"?["Intel Mac? ","mac-intel"]:k==="mac-intel"?["Apple silicon Mac? ","mac-arm"]:k==="appimage"?["Prefer a package? ","deb"]:null;
+    alt.hidden=!other;
+    if(other){
+      var link=document.createElement("a");
+      link.href=kind(other[1]).href;
+      link.textContent=other[1]==="deb"?"Download the .deb":"Download that one";
+      alt.replaceChildren(other[0],link);
+    }
+  }
+  if(first[os]){
+    show(first[os]);
+    document.getElementById("mine").hidden=false;
+    others.hidden=false;
+    all.hidden=true;
+    document.getElementById("heroDl").textContent=kind(first[os]).dataset.label;
+    if(os==="mac"&&navigator.userAgentData&&navigator.userAgentData.getHighEntropyValues){
+      navigator.userAgentData.getHighEntropyValues(["architecture"])
+        .then(function(v){if(v.architecture==="x86") show("mac-intel")}).catch(function(){});
+    }
+  }
+  others.addEventListener("click",function(){
+    all.hidden=!all.hidden;
+    all.classList.toggle("open",!all.hidden);
+    others.setAttribute("aria-expanded",String(!all.hidden));
+    others.textContent=all.hidden?"Other systems":"Hide other systems";
+  });
+
   var rules={
     "mac-arm":function(n){return /\.dmg$/i.test(n)&&/aarch64|arm64/i.test(n)},
     "mac-intel":function(n){return /\.dmg$/i.test(n)&&/x86_64|x64|intel/i.test(n)},
@@ -265,10 +315,11 @@ flyover</pre>
   fetch("https://api.github.com/repos/davidfig/code-flyover/releases/latest",{headers:{Accept:"application/vnd.github+json"}})
     .then(function(r){return r.ok?r.json():Promise.reject()})
     .then(function(rel){
-      document.querySelectorAll("#dl [data-kind]").forEach(function(a){
+      all.querySelectorAll("[data-kind]").forEach(function(a){
         var hit=(rel.assets||[]).filter(function(x){return rules[a.dataset.kind](x.name)})[0];
         if(hit) a.href=hit.browser_download_url;
       });
+      if(current) show(current);
       var n=document.getElementById("dlnote");
       n.insertAdjacentText("afterbegin","Latest: "+rel.tag_name+". ");
     }).catch(function(){});
