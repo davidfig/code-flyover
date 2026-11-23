@@ -72,6 +72,42 @@ jobs:
           KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: '[[ -n "$KEY" ]] || { echo "::error::Set the TAURI_SIGNING_PRIVATE_KEY secret (see the top of this file)"; exit 1; }'
 
+      # Mac: the Developer ID goes into a keychain of our own, so stage-app.mjs can sign the server's native binaries
+      # and Tauri can sign the app with it by name; Tauri then notarizes with the App Store Connect key. A tag fails
+      # without these secrets: APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+      # APPLE_API_ISSUER, APPLE_API_KEY, APPLE_API_PRIVATE_KEY (.p8 contents).
+      - name: Mac signing
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+        run: |
+          if [[ -z "$APPLE_CERTIFICATE" || -z "$APPLE_SIGNING_IDENTITY" || -z "$APPLE_API_KEY" ]]; then
+            if [[ "$GITHUB_REF_TYPE" == tag ]]; then echo "::error::A release needs the Apple signing secrets (see this step)"; exit 1; fi
+            echo "::warning::No Developer ID: this Mac build is unsigned"; exit 0
+          fi
+          kc="$RUNNER_TEMP/signing.keychain-db"
+          pw="$(openssl rand -hex 24)"
+          security create-keychain -p "$pw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$pw" "$kc"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pw" "$kc" > /dev/null
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          key="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY.p8"
+          printf '%s' "$APPLE_API_PRIVATE_KEY" > "$key"
+          {
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"; echo "APPLE_API_KEY=$APPLE_API_KEY"; echo "APPLE_API_KEY_PATH=$key"
+          } >> "$GITHUB_ENV"
+
       - name: Bundle the server (Vite and the app's files)
         run: node src-tauri/stage-app.mjs
 
