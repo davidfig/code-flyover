@@ -70,10 +70,16 @@ pre .c{color:#8d887a}
 .checks li::before{content:"";position:absolute;left:0;top:.55em;width:12px;height:3px;background:var(--teal);border-radius:2px}
 .checks em{font-style:normal;color:var(--muted)}
 .dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px}
-.dl .card.me{border-color:var(--ink)}
+[hidden]{display:none!important}
 .dl .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
 .dl .btn{padding:8px 14px;font-size:14.5px}
 .dl h3 small{font-weight:400;color:var(--muted);font-size:14px}
+.mine{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px}
+.mine-note{color:var(--muted);font-size:15px}
+.link{padding:0;border:0;background:none;color:inherit;font:inherit;font-size:14px;text-decoration:underline;cursor:pointer}
+#dlalt{margin-top:12px}
+.others{display:block;margin:12px 0 0}
+.dl.open{margin-top:14px}
 footer{border-top:1px solid var(--line);padding:32px 0 48px;color:var(--muted);font-size:14px;display:flex;flex-wrap:wrap;gap:12px 24px}
 footer a{color:var(--muted)}
 footer .r{margin-left:auto}
@@ -102,9 +108,9 @@ footer .r{margin-left:auto}
   <main class="log">
     <h1>Changelog</h1>
     <p class="lead">What changed in each release. The app shows the same list under <strong>What’s New</strong>, and updates itself when a new release is out.</p>
-<section class="release" id="vUnreleased"><h3>Coming next</h3>
+<section class="release" id="v0.1.3"><h3>Version 0.1.3 <time datetime="2026-11-23">23 November 2026</time></h3>
 <h4>Added</h4>
-<ul><li>What's New, in the app menu (the Help menu on Windows and Linux) and in Settings, shows this changelog. It's part of the app, so it works offline.</li><li>A changelog page on codeflyover.app.</li></ul></section>
+<ul><li>The Mac app is signed with a Developer ID and notarized by Apple, so macOS opens it without a warning.</li><li>What's New, in the app menu (the Help menu on Windows and Linux) and in Settings, shows this changelog. It's part of the app, so it works offline.</li><li>A changelog page on codeflyover.app.</li></ul></section>
 <section class="release" id="v0.1.1"><h3>Version 0.1.1 <time datetime="2026-11-22">22 November 2026</time></h3>
 <h4>Added</h4>
 <ul><li>The desktop app updates itself from GitHub Releases. It checks when it starts and every six hours, downloads and verifies a signed update in the background, then offers <strong>Restart to update</strong>. Nothing installs until you click it. <strong>Check for Updates…</strong> in the menu checks now.</li><li><strong>Install Claude Code Skill…</strong> in the menu installs the <code>/flyover-review</code> and <code>/flyover-describe</code> skills and a <code>flyover</code> command, for when only the app is installed.</li><li><code>/flyover-describe</code> writes a sentence for every file and folder in a repo, shown when you hover its name on the map, on any branch. Notes are tied to file contents, so a rerun only redoes what changed.</li></ul>
