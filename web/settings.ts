@@ -64,6 +64,7 @@ export const DEFS = {
   panelTextPx: num('Window', 'Side panel text size', 'The size of the side panel’s body text. Headings, tags and code in it grow and shrink with it.', 13, 8, 1, 'px'),
   tipTextPx: num('Window', 'Hover card text size', 'The size of the text in the card that shows when you hover over a file or folder on the map.', 12, 8, 1, 'px'),
   liveCheckSeconds: num('Window', 'Check for new commits every', 'How often the open branch is checked for new commits and newly saved reviews while the window is in front.', 4, 1, 1, 's'),
+  showPrs: bool('Window', 'Pull request numbers', 'Show each branch’s GitHub pull request number (#123) in the branch list. This contacts GitHub, through git and the sign-in it already uses.', false),
 } satisfies Record<string, SettingDef>
 
 export type SettingKey = keyof typeof DEFS

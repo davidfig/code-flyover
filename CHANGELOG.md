@@ -10,6 +10,10 @@ its date and start a fresh Unreleased above it.
 
 ### Added
 
+- A title bar on the file you're reading, with its name, folder, status and line counts. It stays at the top of the
+  file as you scroll; hover it for the file's summary. Other files' name tags stay in view too, when their tops are off screen.
+- Pull request numbers (#123) in the branch list, with a new setting that's off by default. They come from GitHub
+  through git, with the sign-in it already uses, so there's nothing to install.
 - A scroll bar on every file with more to show than fits in its box, selected or not. Drag it, or click to jump.
 - → and ← move to the next and previous file, through each group and on to the next; ↓ and ↑
   go to the first file of the next and previous section. They work while the map has the focus. The view slides so the file's

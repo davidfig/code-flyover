@@ -173,6 +173,7 @@ const branchPicker = picker({
         ...branchList.branches.map((b) => ({
           value: b.name,
           label: b.name,
+          badge: settings.showPrs && prs?.repo === current!.repo.id && prs.numbers[b.name] ? `#${prs.numbers[b.name]}` : undefined,
           detail: `${b.ahead} ahead · ${ago(b.date)}${b.worktree ? ' · checked out' : ''}`,
           title: `${b.subject}${b.worktree ? `\n${b.worktree}` : ''}`,
         })),
@@ -199,6 +200,19 @@ function renderBranchPicker() {
 async function loadBranches(repo: Repo) {
   const r = await api<{ base: string; branches: Branch[] }>(`/api/branches?repo=${encodeURIComponent(repo.id)}`)
   branchList = { repo: repo.id, ...r }
+  void loadPrs(repo)
+}
+
+/** The branches' pull request numbers, when that setting is on: they come in after the list, which doesn't wait. */
+let prs: { repo: string; numbers: Record<string, number> } | null = null
+async function loadPrs(repo: Repo) {
+  if (!settings.showPrs) return
+  try {
+    const numbers = await api<Record<string, number>>(`/api/prs?repo=${encodeURIComponent(repo.id)}`)
+    if (current?.repo.id !== repo.id) return
+    prs = { repo: repo.id, numbers }
+    renderBranchPicker()
+  } catch {} // no numbers
 }
 
 let routing = 0
@@ -377,9 +391,13 @@ function settingsChanged(changed: SettingKey[]) {
     syncScope()
     void fillWholeRepoText()
   }
-  const rest = changed.filter((k) => !show.includes(k) && k !== 'panelWidth' && k !== 'panelTextPx' && k !== 'tipTextPx')
+  const rest = changed.filter((k) => !show.includes(k) && k !== 'panelWidth' && k !== 'panelTextPx' && k !== 'tipTextPx' && k !== 'showPrs')
   if (rest.length) map.settingsChanged(rest, rest.some((k) => LAYOUT_KEYS.includes(k)))
   if (changed.includes('liveCheckSeconds')) startLiveChecks()
+  if (changed.includes('showPrs')) {
+    renderBranchPicker()
+    if (current) void loadPrs(current.repo)
+  }
 }
 
 /**

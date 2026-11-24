@@ -194,6 +194,8 @@ const RESHAPE_MS = 200
 const BAR_W = 12
 const BAR_MIN_THUMB = 28
 const BAR_MIN_W = 2
+/** The title bar over the file being read, CSS px (style.css .file-title). A box showing less than three of it has none. */
+const TITLE_H = 26
 const BAR_GRAB_W = 5
 
 /** Runs `cb` when the browser is idle (Safari has no requestIdleCallback: a short timeout stands in). */
@@ -308,6 +310,8 @@ export class ZoomMap {
   private scrolls = new Set<number>()
   /** the scroll bar you can drag (the rest are drawn): the hovered file's, or the selected one's */
   private barHover: number | null = null
+  /** the title bar of the file being read */
+  private title = document.createElement('div')
   private bar = document.createElement('div')
   private barThumb = document.createElement('div')
 
@@ -340,6 +344,9 @@ export class ZoomMap {
     this.host.appendChild(this.overlay)
     this.host.appendChild(this.labels)
     this.host.appendChild(this.changesLayer)
+    this.title.className = 'file-title'
+    this.title.style.display = 'none'
+    this.host.appendChild(this.title)
     this.attachBar()
     this.tip.className = 'file-tip'
     this.tip.hidden = true
@@ -910,6 +917,7 @@ export class ZoomMap {
     this.drawSelection()
     this.shapes.flush(this.overlay.width, this.overlay.height)
     this.drawLabels(vb, s, path)
+    this.drawTitle(vb, s)
     this.drawCards(vb, s)
     const key = level + trail.map((n) => n.id).join(',')
     if (key !== this.lastLevel) {
@@ -1044,7 +1052,8 @@ export class ZoomMap {
           `<div class="tw">AI-written${stale}</div>`
         )
       }
-      if (!own) return null
+      // The title bar always answers, with how to get a summary if there isn't one; another file's name says nothing.
+      if (!own) return this.reading(n) ? `<div class="tp">${esc(path)}</div><div class="ta">No summary yet. Run /flyover-describe in a Claude Code session.</div>` : null
       return `<div class="tp">${esc(path)}</div><div class="ta">${esc(own.about)}</div><div class="tw">AI-written${own.stale}</div>`
     }
     if (n.kind === 'module') {
@@ -1065,6 +1074,13 @@ export class ZoomMap {
     let hit: (typeof this.labelHits)[number] | undefined
     for (const b of this.labelHits) if (x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1) hit = b
     return hit
+  }
+
+  /** The file whose title bar is at (x, y) CSS px, if one is. */
+  private titleAt(x: number, y: number): number | null {
+    const n = this.selected
+    if (!n || !this.reading(n) || this.labelAt(x, y)?.node !== n) return null
+    return n.file ?? null
   }
 
   /** The pointer is at (x, y) CSS px: over a label with something to say, its tooltip shows after a moment. */
@@ -1123,11 +1139,12 @@ export class ZoomMap {
     const put = (n: MapNode, above: Box[]): Box | null => {
       const { w, h } = this.screenSize(n)
       if (w < LABEL_FROM_PX || h < 14) return null
-      // A box whose top has gone above the window would get its label pinned to the window's top edge, floating
-      // over the text. On the breadcrumb path the header names it; and once diff text is showing, no label floats.
-      if (n.y < vb.y && (inHeader.has(n) || textShowing)) return null
-      // The selected file, when its text shows, is named in the header: no label line over it.
-      if (this.reading(n)) return null
+      // A folder whose top has gone above the window would get its label pinned to the window's top edge, floating
+      // over the text. On the breadcrumb path the header names it; and once diff text is showing, it doesn't float.
+      // A file's does: whatever part of a file you're looking at, its name is on it.
+      if (n.kind !== 'file' && n.y < vb.y && (inHeader.has(n) || textShowing)) return null
+      // The file being read has its title bar, unless too little of it is on screen for one.
+      if (n === sel && this.titleH(n, Math.min(selBox.y1, this.camera.height) - Math.max(selBox.y0, 0))) return null
       // A tag at the box's top-left corner, sliding along the window's edge when that corner is off screen.
       const sx = Math.max((n.x - vb.x) * s, 0) + 3
       let sy = Math.max((n.y - vb.y) * s, 0) + 3
@@ -1221,6 +1238,45 @@ export class ZoomMap {
     for (let i = used; i < this.labelPool.length; i++) setStyle(this.labelPool[i], 'display', 'none')
   }
 
+  /** How much of the top of a box the title bar takes, when `visible` CSS px of its height are on screen. */
+  private titleH(n: MapNode, visible: number): number {
+    return this.reading(n) && visible >= TITLE_H * 3 ? TITLE_H : 0
+  }
+
+  /** The title bar of the file being read: along the top of the part of its box that's on screen, above its text. */
+  private drawTitle(vb: View, s: number) {
+    const n = this.selected
+    const el = this.title
+    const x = n ? (n.x - vb.x) * s : 0
+    const y = n ? (n.y - vb.y) * s : 0
+    const left = Math.max(x, 0)
+    const top = Math.max(y, 0)
+    const right = n ? Math.min(x + n.w * s, this.camera.width) : 0
+    const bottom = n ? Math.min(y + n.h * s, this.camera.height) : 0
+    if (!n || right - left < 24 || !this.titleH(n, bottom - top)) return setStyle(el, 'display', 'none')
+    const f = this.a.files[n.file!]
+    const slash = f.path.lastIndexOf('/')
+    const status = f.status === 'unchanged' ? '' : `<span class="st ${f.status}">${f.status === 'added' ? 'new' : f.status}</span>`
+    const counts = f.add || f.del ? `<span class="counts"><span class="plus">+${f.add}</span> <span class="minus">−${f.del}</span></span>` : ''
+    const html = `<b>${esc(f.path.slice(slash + 1))}</b><span class="dir">${esc(f.path.slice(0, Math.max(slash, 0)))}</span>${status}${counts}`
+    if (el.dataset.html !== html) {
+      el.innerHTML = html
+      el.dataset.html = html
+    }
+    // Inside the selection's outline, where that's on screen.
+    const inset = (edge: number) => Math.max(0, Math.min(SELECT_PX, SELECT_PX + edge))
+    const l = left + inset(x)
+    const r = right - inset(this.camera.width - (x + n.w * s))
+    const t = top + inset(y)
+    setClass(el, 'file-title' + (r - l < 280 ? ' narrow' : ''))
+    setStyle(el, 'transform', `translate(${px(l)}, ${px(t)})`)
+    setStyle(el, 'width', px(r - l))
+    setStyle(el, 'height', px(top + TITLE_H - t))
+    setStyle(el, 'display', '')
+    // Like a label: hovering or clicking it says what there is to say about the file.
+    this.labelHits.push({ x0: l, y0: t, x1: r, y1: top + TITLE_H, node: n })
+  }
+
   /** Whether the diff text is big enough to read at this zoom (see DIFF_TEXT_FROM). */
   private readable(): boolean {
     return this.textScale() >= DIFF_TEXT_FROM()
@@ -1232,7 +1288,7 @@ export class ZoomMap {
   }
 
   /**
-   * The file being read: the selected one, with its text showing. The header names it, so it has no label. (Not the
+   * The file being read: the selected one, with its text showing. It has a title bar instead of a label. (Not the
    * file at the centre of the view: as you pan, files passing under the centre would lose their labels.)
    */
   private reading(n: MapNode): boolean {
@@ -1338,7 +1394,8 @@ export class ZoomMap {
       const contentH = this.text.get(id)?.height ?? 0
       st.k = k
       st.hidden = (visTop - boxTop) / k
-      st.visH = (visBottom - visTop) / k
+      const textTop = visTop + this.titleH(n, visBottom - visTop) // its text starts below its title bar
+      st.visH = (visBottom - textTop) / k
       const scroll = Math.max(0, Math.min(st.hidden + st.offset, Math.max(0, contentH - st.visH)))
       st.offset = scroll - st.hidden
       const needsBar = selected && this.readable() && (contentH - st.visH) * k > 1
@@ -1347,8 +1404,8 @@ export class ZoomMap {
         this.schedule() // wrap to make (or take back) its room
       }
       st.originX = selected ? visLeft : sx
-      st.originY = visTop - scroll * k
-      st.clip = { x: visLeft, y: visTop, w: visRight - visLeft, h: visBottom - visTop }
+      st.originY = textTop - scroll * k
+      st.clip = { x: visLeft, y: textTop, w: visRight - visLeft, h: visBottom - textTop }
       list.push({
         id,
         at: { x: st.originX * dpr, y: st.originY * dpr, scale: k * dpr, alpha: 1, clip: { x: st.clip.x * dpr, y: st.clip.y * dpr, w: st.clip.w * dpr, h: st.clip.h * dpr } },
@@ -1404,6 +1461,9 @@ export class ZoomMap {
     const left = Math.max((n.x - vb.x) * s, 0)
     const top = Math.max((n.y - vb.y) * s, 0)
     const clip = { x: left, y: top, w: Math.min((n.x + n.w - vb.x) * s, this.camera.width) - left, h: Math.min((n.y + n.h - vb.y) * s, this.camera.height) - top }
+    const title = this.titleH(n, clip.h)
+    clip.y += title
+    clip.h -= title
     const w = full ? BAR_W : Math.max(BAR_MIN_W, Math.min(BAR_W, BAR_W * k))
     if (clip.w < w * 4 || clip.h < w * 2) return null
     if (!st) {
@@ -1619,7 +1679,8 @@ export class ZoomMap {
     // the file doesn't spill into the map as momentum carries on (macOS scroll views work the same way).
     const fresh = e.timeStamp - this.wheelGesture.last > WHEEL_GESTURE_GAP_MS
     this.wheelGesture.last = e.timeStamp
-    if (fresh) this.wheelGesture.file = this.textAt(x, y)
+    // (The title bar belongs to the text it heads.)
+    if (fresh) this.wheelGesture.file = this.textAt(x, y) ?? this.titleAt(x, y)
     const file = this.wheelGesture.file
     if (file === null || !this.selected || this.selected.file !== file) return false
     const st = this.textStates.get(file)

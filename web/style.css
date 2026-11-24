@@ -81,6 +81,8 @@ header .picker { padding: 0 8px 0 10px; }
 .picker-row.chosen .picker-label { font-weight: 600; }
 .picker-check { flex: none; width: 14px; text-align: center; color: var(--select); font-size: 11px; }
 .picker-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.picker-badge { flex: none; margin-left: 6px; color: var(--muted); font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
+.picker-name .picker-badge { margin-left: 2px; }
 .picker-detail { margin-left: auto; padding-left: 18px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .picker-commands { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
 .picker-command .picker-label { color: var(--ink); }
@@ -209,6 +211,16 @@ main { flex: 1; display: flex; min-height: 0; }
 .st.added { background: var(--added); }
 .st.modified, .st.renamed { background: var(--modified); }
 .st.deleted, .st.removed { background: var(--deleted); }
+
+/* The title bar of the file being read (map.ts drawTitle places it; its height is TITLE_H). */
+.file-title {
+  position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+  overflow: hidden; white-space: nowrap; font-size: 12px; background: var(--panel); border-bottom: 1px solid var(--line); will-change: transform;
+}
+.file-title b { font: 600 13px var(--mono); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.file-title .dir { font: 12px var(--mono); color: var(--muted); flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.file-title .st, .file-title .counts { flex: none; }
+.file-title.narrow .dir, .file-title.narrow .counts { display: none; }
 
 /* The scroll bar you can drag: the selected file's or the hovered one's (map.ts drawBars places it, and draws the rest). */
 #map:focus { outline: none; }

@@ -1,11 +1,13 @@
 // The app's local API: which repos you've added, their branches, analyses made on demand, and the AI change
 // descriptions and reviews an outside AI saved (`flyover import`). It never calls a model. Served by Vite (vite.config.ts), both for `npm run dev` and for
-// the `flyover` command (bin/flyover.mjs). Everything is read from git commits on this machine.
+// the `flyover` command (bin/flyover.mjs). Everything is read from git commits on this machine, except pull request
+// numbers (server/prs.ts), which the page asks for only when that setting is on.
 //
 // GET    /api/repos                                   the repos you've added
 // POST   /api/repos      { path }                     add one (any folder inside a git repo)
 // DELETE /api/repos?repo=<id>                         forget one (nothing in the repo is touched)
 // GET    /api/branches?repo=<id>                      its local branches, newest first, and the default base
+// GET    /api/prs?repo=<id>                           its branches' GitHub pull request numbers (asks GitHub, through git)
 // GET    /api/analysis?repo=<id>&head=<ref>&base=<ref> the analysis (made now, or from memory), with saved descriptions and review
 // GET    /api/texts?repo=<id>&sha=<commit>            the text of every file the map can show at that commit (Whole repo)
 // GET    /api/saved?repo=<id>&head=<ref>&base=<ref>    its saved descriptions, review and repo notes alone (the page checks for new ones)
@@ -29,6 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { analyze, onMap } from '../analyzer/analyze.ts'
 import { listFiles, readFiles, snapshot } from '../analyzer/git.ts'
 import { notesAt } from './notes.ts'
+import { pullNumbers } from './prs.ts'
 import type { Analysis, ChangeSet, Review } from '../shared/types.ts'
 
 export interface Repo {
@@ -459,6 +462,10 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
       return send(200, readRepos())
     }
     if (route === 'GET /branches') return send(200, branches(repoById(q.get('repo'))))
+    if (route === 'GET /prs') {
+      const repo = repoById(q.get('repo'))
+      return send(200, await pullNumbers(repo.path, branches(repo).branches))
+    }
     if (route === 'GET /analysis') {
       const repo = repoById(q.get('repo'))
       return send(200, analysisFor(repo, need(q.get('head'), 'head'), need(q.get('base') ?? defaultBase(repo.path), 'base')))

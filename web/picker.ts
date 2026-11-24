@@ -9,6 +9,8 @@
 export interface PickerItem {
   value: string
   label: string
+  /** Muted text right after the label, on the row and on the button. */
+  badge?: string
   /** Muted text on the right of the row (not on the button). */
   detail?: string
   /** A tooltip for the row. */
@@ -96,6 +98,7 @@ export function picker(spec: PickerSpec): Picker {
       current = value
       const item = spec.groups().flatMap((g) => g.items).find((i) => i.value === value)
       name.textContent = item?.label ?? label ?? value
+      if (item?.badge) name.append(' ', el('span', 'picker-badge', item.badge))
     },
     get disabled() { return button.disabled },
     set disabled(d) { button.disabled = d },
@@ -156,10 +159,11 @@ export function picker(spec: PickerSpec): Picker {
         r.setAttribute('aria-selected', String(isChosen))
         if (item.title) r.title = item.title
         r.append(el('span', 'picker-check', isChosen ? '✓' : ''), el('span', 'picker-label', item.label))
+        if (item.badge) r.append(el('span', 'picker-badge', item.badge))
         if (item.detail) r.append(el('span', 'picker-detail', item.detail))
         const row: Row = {
           el: r,
-          text: `${item.label} ${item.detail ?? ''}`.toLowerCase(),
+          text: `${item.label} ${item.badge ?? ''} ${item.detail ?? ''}`.toLowerCase(),
           group: g.heading ? into : undefined,
           pick: () => {
             close(true)

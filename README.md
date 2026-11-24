@@ -14,7 +14,7 @@ Most review tools give you a list of files. Code Flyover gives you a map of the 
 
 It's built to help a person **understand** a change: what it does, where it sits, and whether that's where it belongs. Bug hunting is left to an AI reviewer you run separately (see [AI review](#ai-review)), whose findings then show up on the map.
 
-Everything runs on your machine. The app reads your repo through git, never touches your working tree, and never calls a model or sends code anywhere.
+Everything runs on your machine. The app reads your repo through git, never touches your working tree, and never calls a model or sends code anywhere. If you turn on **Pull request numbers** in Settings (off by default), it asks GitHub for them with `git ls-remote`, using the sign-in git already has.
 
 ## Requirements
 
