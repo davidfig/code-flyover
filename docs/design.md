@@ -30,7 +30,17 @@ The same review file can also hold `files` (for each changed file, what it is an
 
 The footprint counts source files only. Tests, translations (`i18n/`, `locales/`, …) and generated files are counted separately.
 
-Dependencies are found for TypeScript/JavaScript (imports, re-exports, `require`, dynamic `import()`, `new URL(…, import.meta.url)`, workspace package names and their `exports`) and Rust (`use` trees and inline `crate::`/`super::`/workspace-crate paths).
+Dependencies are found by language (the list of languages and their file extensions is `shared/languages.ts`):
+
+- **TypeScript/JavaScript**, and the scripts in Vue, Svelte and Astro files: imports, re-exports, `require`, dynamic `import()`, `new URL(…, import.meta.url)`, workspace package names and their `exports`.
+- **Rust:** `use` trees and inline `crate::`/`super::`/workspace-crate paths.
+- **Python:** `import` and `from … import`, relative ones included, resolved to modules and packages' `__init__.py` under any folder that could be on the importer's `sys.path`. Imports from outside the repo and the standard library are third-party packages.
+- **Go:** imports under a `go.mod` module, to the files in that package that declare the names used (`pkg.Name`); files in one package depend on the siblings whose names they use.
+- **C#, Java, Kotlin, Scala, Swift, PHP, Ruby:** by name. A file depends on another when it uses a name the other declares in a scope it can see: its own namespace, package or module (C# adds the parent namespaces), the ones it imports whole, and the names it imports one by one. Ruby's constants are global, as Rails autoloads them. It's names, not types, so a variable that shares a class's name counts too.
+- **C/C++/Objective-C** `#include`/`#import`, **Dart** `import`/`export`/`part` (with `package:` paths for packages in the repo), **Lua** `require`, plus Ruby's `require`/`require_relative` and PHP's `require`/`include`: by path.
+- **Everything else** that's text is on the map as the fallback (binaries, build output and files over 512 KB aren't): it's diffed and coloured like code (as plain text if the language isn't listed), and depends on the repo files it names in quotes or `url(…)`, outside comments, relative to the file or the repo root.
+
+Lockfiles count as generated. Only programming languages count toward the "no tests changed" finding, so a branch that changes three config files isn't asked for tests.
 
 ## The map
 

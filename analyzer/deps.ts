@@ -1,24 +1,25 @@
 // Finds file-to-file dependencies in one snapshot of a repo.
-// TypeScript/JavaScript: import/export/require/dynamic import/new URL(…, import.meta.url),
-// resolved through relative paths and pnpm/npm workspace package names.
+// TypeScript/JavaScript (and the scripts in Vue/Svelte/Astro files): import/export/require/dynamic import/
+// new URL(…, import.meta.url), resolved through relative paths and pnpm/npm workspace package names.
 // Rust: `use` paths and inline `crate::`/`super::`/workspace-crate paths, resolved to module files.
+// The other languages are in langs/: Python (python.ts), Go (go.ts), C#, Java, Kotlin, Scala, Swift, PHP and Ruby
+// by the names they use (symbols.ts), C/C++, Dart and Lua by path (paths.ts). Any other text file on the map gets
+// the fallback: the repo files it quotes (paths.ts).
 
 import path from 'node:path/posix'
+import { isCode, isFallback } from './files.ts'
+import type { Dep, LangDeps, Snapshot } from './langs/common.ts'
+import { goDeps } from './langs/go.ts'
+import { fallbackDeps, pathDeps } from './langs/paths.ts'
+import { pythonDeps } from './langs/python.ts'
+import { symbolDeps } from './langs/symbols.ts'
+
+export type { Dep, Snapshot } from './langs/common.ts'
 
 export const TS_EXT = /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
+/** Files with a script block that imports like TypeScript does. */
+const COMPONENT_EXT = /\.(vue|svelte|astro)$/
 export const RS_EXT = /\.rs$/
-
-export interface Snapshot {
-  files: Set<string>
-  contents: Map<string, string>
-}
-
-export interface Dep {
-  to: string
-  line: string
-  /** `import type` / `export type`: erased at compile time */
-  typeOnly?: boolean
-}
 
 export interface SnapshotDeps {
   /** file → files it depends on */
@@ -238,7 +239,7 @@ export function snapshotDeps(snap: Snapshot): SnapshotDeps {
   const external = new Map<string, Dep[]>()
   for (const file of snap.files) {
     if (file.includes('node_modules/')) continue
-    if (TS_EXT.test(file)) {
+    if (TS_EXT.test(file) || COMPONENT_EXT.test(file)) {
       const src = snap.contents.get(file)
       if (src === undefined) continue
       const clean = stripComments(src)
@@ -264,12 +265,28 @@ export function snapshotDeps(snap: Snapshot): SnapshotDeps {
       deps.set(file, rustDeps(snap, crates, file))
     }
   }
+  const merge = (more: LangDeps) => {
+    for (const [f, list] of more.deps) {
+      const have = deps.get(f) ?? deps.set(f, []).get(f)!
+      for (const d of list) if (!have.some((x) => x.to === d.to)) have.push(d)
+    }
+    for (const [f, list] of more.external) {
+      const have = external.get(f) ?? external.set(f, []).get(f)!
+      for (const d of list) if (!have.some((x) => x.to === d.to)) have.push(d)
+    }
+  }
+  merge(pythonDeps(snap))
+  merge(goDeps(snap))
+  merge(symbolDeps(snap))
+  merge(pathDeps(snap))
+  merge(fallbackDeps(snap, [...snap.files].filter((f) => isFallback(f) && snap.contents.has(f))))
   return { deps, external }
 }
 
-/** Files whose contents the dependency pass needs (code plus manifests). */
+/** Manifests the resolvers read to find packages, modules and crates. */
+const MANIFEST = /(^|\/)(package\.json|Cargo\.toml|go\.mod|pubspec\.yaml)$/
+
+/** Files whose contents the dependency pass needs: code, the fallback files, and manifests. */
 export function neededForDeps(files: string[]): string[] {
-  return files.filter(
-    (f) => !f.includes('node_modules/') && (TS_EXT.test(f) || RS_EXT.test(f) || f.endsWith('package.json') || f.endsWith('Cargo.toml')),
-  )
+  return files.filter((f) => !f.includes('node_modules/') && (isCode(f) || isFallback(f) || MANIFEST.test(f)))
 }

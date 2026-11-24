@@ -79,7 +79,7 @@ To check against the architecture you intend instead, add a `.code-flyover.json`
 
 The file is read from the **base** commit, so a branch can't loosen the rules it's checked against. A branch that edits the file gets a warning.
 
-Dependencies are found for TypeScript/JavaScript and Rust.
+Dependencies are found for TypeScript/JavaScript (and Vue, Svelte and Astro scripts), Rust, Python, Go, C#, Java, Kotlin, Scala, Swift, PHP, Ruby, C/C++/Objective-C, Dart and Lua. Every other text file (config, styles, HTML, shell scripts, languages without a dependency finder yet) is still on the map, coloured where the language is known, and linked to the repo files it names in quotes.
 
 ## AI review
 

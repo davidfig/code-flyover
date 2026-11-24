@@ -8,6 +8,17 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+### Added
+
+- Dependencies for Python, Go, C#, Java, Kotlin, Scala, Swift, PHP, Ruby, C/C++/Objective-C, Dart and Lua, and for the
+  scripts in Vue, Svelte and Astro files, as well as TypeScript/JavaScript and Rust. Their tests are recognised
+  (`test_*.py`, `*_test.go`, `FooTest.java`, `MyApp.Tests/`, `*_spec.rb` and so on), and new third-party imports are
+  flagged for Python, Go and Dart.
+- Every other text file is on the map too: config, styles, HTML, shell scripts and languages without a dependency
+  finder. They're diffed and coloured like code, and linked to the repo files they name. Lockfiles count as
+  generated.
+- Syntax colouring for all of these, and plain text for anything else.
+
 ## 0.1.3 - 2026-11-23
 
 ### Added
