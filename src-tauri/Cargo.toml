@@ -1,6 +1,6 @@
 [package]
 name = "code-flyover-desktop"
-version = "0.1.5"
+version = "0.1.6"
 description = "Code Flyover in its own window: starts the app's server from this checkout and shows it"
 license = "MIT"
 edition = "2021"

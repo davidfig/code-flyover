@@ -8,6 +8,13 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+## 0.1.6 - 2026-11-24
+
+### Fixed
+
+- **Check for Updates…** and **Restart to update** failed with "not allowed by ACL". Versions before this one can't
+  update themselves: download this one once, and updates work from then on.
+
 ## 0.1.5 - 2026-11-24
 
 ### Added

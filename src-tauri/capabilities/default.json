@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The window, and the app the local server shows in it, may pick a folder, pick where to export settings, drag the window, and hear menu clicks.",
+  "description": "The window, and the app the local server shows in it, may pick a folder, pick where to export settings, drag the window, hear menu clicks, and check for and install updates.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://localhost:5197/*"]
@@ -12,6 +12,9 @@
     "core:window:allow-start-dragging",
     "core:window:allow-internal-toggle-maximize",
     "core:event:allow-listen",
-    "core:event:allow-unlisten"
+    "core:event:allow-unlisten",
+    "allow-update-ready",
+    "allow-check-for-updates",
+    "allow-install-update"
   ]
 }
