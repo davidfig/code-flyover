@@ -8,6 +8,8 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+## 0.1.5 - 2026-11-24
+
 ### Added
 
 - A title bar on the file you're reading, with its name, folder, status and line counts. It stays at the top of the
