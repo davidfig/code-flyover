@@ -124,7 +124,7 @@ Any agent that can run shell commands works: have it run `flyover export`, follo
 
 `src-tauri/` wraps the same app in a window of its own (built with Tauri), with a menu bar and File › Open Repo… using the system folder picker. It runs on macOS, Windows and Linux (the Windows and Linux builds are untested so far).
 
-**Download:** installers (macOS `.dmg`, Windows `.msi` / `.exe`, Linux `.deb`, `.rpm` and `.AppImage`) are attached to each [GitHub release](https://github.com/davidfig/code-flyover/releases). They're unsigned, so macOS and Windows will warn the first time you open one. You need Node.js and git installed.
+**Download:** installers (macOS `.dmg`, Windows `.msi` / `.exe`, Linux `.deb`, `.rpm` and `.AppImage`) are attached to each [GitHub release](https://github.com/davidfig/code-flyover/releases). The Mac app is signed and notarized by Apple. The Windows installers are unsigned, so Windows will warn the first time you open one. You need Node.js and git installed.
 
 **Updates:** the downloaded app keeps itself up to date (on Linux, the AppImage; `.deb` and `.rpm` installs update with a new download). It checks for a new release at start and every six hours, downloads it in the background, then offers **Restart to update**; nothing installs until you click it. **Check for Updates…** (in the Code Flyover menu on macOS, Help on Windows and Linux) checks now. Updates are signed, and the app refuses any that the project's update key didn't sign. A copy you build yourself doesn't update itself.
 

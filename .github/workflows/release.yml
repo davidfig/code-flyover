@@ -108,8 +108,46 @@ jobs:
             echo "APPLE_API_ISSUER=$APPLE_API_ISSUER"; echo "APPLE_API_KEY=$APPLE_API_KEY"; echo "APPLE_API_KEY_PATH=$key"
           } >> "$GITHUB_ENV"
 
+      # Windows: Azure Artifact Signing. Tauri reads tauri.windows.conf.json on its own and runs signCommand on the app
+      # and on each installer; artifact-signing-cli takes the account and profile from the environment. Builds
+      # are unsigned, with a warning, until it has the secrets AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET, and the variables
+      # AZURE_ARTIFACT_SIGNING_ENDPOINT, AZURE_ARTIFACT_SIGNING_ACCOUNT and AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE.
+      - name: Windows signing
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+        run: |
+          if [[ -z "$AZURE_TENANT_ID" || -z "$AZURE_CLIENT_ID" || -z "$AZURE_CLIENT_SECRET" || -z "$ENDPOINT" || -z "$ACCOUNT" || -z "$PROFILE" ]]; then
+            echo "::warning::No Artifact Signing account: this Windows build is unsigned"; exit 0
+          fi
+          cargo install artifact-signing-cli --version 0.12.0 --locked
+          {
+            echo "AZURE_TENANT_ID=$AZURE_TENANT_ID"; echo "AZURE_CLIENT_ID=$AZURE_CLIENT_ID"; echo "AZURE_CLIENT_SECRET=$AZURE_CLIENT_SECRET"
+            echo "AZURE_ARTIFACT_SIGNING_ACCOUNT=$ACCOUNT"; echo "AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE=$PROFILE"
+            echo "SIGN_ENDPOINT=$ENDPOINT"; echo "WINDOWS_SIGNED=1"
+          } >> "$GITHUB_ENV"
+          printf '{ "bundle": { "windows": { "signCommand": "artifact-signing-cli -e %s -d CodeFlyover %%1" } } }\n' "$ENDPOINT" > src-tauri/tauri.windows.conf.json
+
       - name: Bundle the server (Vite and the app's files)
         run: node src-tauri/stage-app.mjs
+
+      # Tauri signs the app and installers but not files among its resources: esbuild's executable and Rollup's .node
+      # library. Ones their own publisher signed are left alone.
+      - name: Sign the server's native binaries (Windows)
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNED == '1'
+        shell: bash
+        run: |
+          find src-tauri/app -type f \( -name '*.exe' -o -name '*.node' -o -name '*.dll' \) -print0 | while IFS= read -r -d '' f; do
+            status="$(powershell -NoProfile -Command "(Get-AuthenticodeSignature '$f').Status" | tr -d '\r')"
+            echo "$status $f"
+            if [[ "$status" != Valid ]]; then artifact-signing-cli -e "$SIGN_ENDPOINT" -d CodeFlyover "$f"; fi
+          done
 
       - uses: tauri-apps/tauri-action@v0
         env:
@@ -129,3 +167,12 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
           args: --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.updater.conf.json --features updater ${{ matrix.args }}
+
+      # The app inside each installer is signed by the same signCommand before it's packed.
+      - name: Check the Windows signatures
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNED == '1'
+        shell: bash
+        run: |
+          for f in src-tauri/target/release/bundle/nsis/*-setup.exe src-tauri/target/release/bundle/msi/*.msi; do
+            powershell -NoProfile -Command "\$s = Get-AuthenticodeSignature '$f'; \"\$(\$s.Status) \$(\$s.SignerCertificate.Subject) $f\"; if (\$s.Status -ne 'Valid') { exit 1 }"
+          done
