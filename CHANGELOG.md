@@ -8,6 +8,8 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+## 0.1.4 - 2026-11-24
+
 ### Added
 
 - Dependencies for Python, Go, C#, Java, Kotlin, Scala, Swift, PHP, Ruby, C/C++/Objective-C, Dart and Lua, and for the
