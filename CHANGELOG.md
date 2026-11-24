@@ -8,6 +8,18 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+### Added
+
+- A scroll bar on every file with more to show than fits in its box, selected or not. Drag it, or click to jump.
+- → and ← move to the next and previous file, through each group and on to the next; ↓ and ↑
+  go to the first file of the next and previous section. They work while the map has the focus. The view slides so the file's
+  top-left corner lands where the last one's was, at the same zoom.
+
+### Changed
+
+- The map is packed tighter, so everything on it is bigger with the whole map in view: fewer holes, columns not
+  stretched past their text, and less margin. It's laid out again when the window changes shape.
+
 ## 0.1.4 - 2026-11-24
 
 ### Added

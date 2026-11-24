@@ -44,7 +44,7 @@ Lockfiles count as generated. Only programming languages count toward the "no te
 
 ## The map
 
-- By default it shows only the changed files (plus the target of any forbidden import, so a violation's arrow has both ends), laid out for reading: every file is a column of text, taller for a longer diff (by √rows, not in proportion), grouped by folder and module. Folders and columns stretch to fill the space, and the map takes the window's shape, so there's no blank around or between them. A box bigger than its diff fills with the unchanged lines around the change. Text is the same size in every box; a wider box just wraps later.
+- By default it shows only the changed files (plus the target of any forbidden import, so a violation's arrow has both ends), laid out for reading: every file is a column of text, taller for a longer diff (by √rows, not in proportion), grouped by folder and module. They're packed as tightly as it can find for the window's shape, so every box is as big as possible with the whole map in view; folders and columns then stretch a little to fill what's left. A box bigger than its diff fills with the unchanged lines around the change. Text is the same size in every box; a wider box just wraps later.
 - **Show › Unchanged files** switches to the whole repo as a squarified treemap (module → folder → file, sized by √lines), and **Importers of changed files** tints the files that import a change. **Tests** and **Translations** put those back in either view.
 - A module whose files all sit in one folder is shown as that folder (`server/src` is just `server`).
 - Zoomed out, numbered **change cards** sit over the code they describe. They fade as you zoom in, and step aside while you look at a change, finding or file.

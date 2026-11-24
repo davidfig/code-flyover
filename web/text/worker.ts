@@ -51,7 +51,23 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     if (!model || !metrics) return
     let laid = layoutDiff(model, metrics, msg.width)
     // A box taller than its diff: show the code around the changes until it's full.
-    if (msg.fillTo) for (let round = 0; round < 400 && laid.height < msg.fillTo && model.growAll(FILL_STEP); round++) laid = layoutDiff(model, metrics, msg.width)
+    // Never past full: code pushed out of the box would have to be scrolled to.
+    if (msg.fillTo) {
+      const grow = (step: number, rounds: number) => {
+        for (let round = 0; round < rounds && laid.height < msg.fillTo!; round++) {
+          const was = model.gaps.map((g) => g && { top: g.top, bottom: g.bottom })
+          if (!model.growAll(step)) return
+          const next = layoutDiff(model, metrics!, msg.width)
+          if (next.height > msg.fillTo!) {
+            model.gaps.forEach((g, i) => g && Object.assign(g, was[i]))
+            return
+          }
+          laid = next
+        }
+      }
+      grow(FILL_STEP, 400)
+      grow(1, FILL_STEP)
+    }
     ;(self as unknown as Worker).postMessage({ type: 'laid', id: msg.id, seq: msg.seq, ...laid }, [laid.glyphs, laid.rects])
   } else if (msg.type === 'expand') {
     const model = modelOf(msg.id)

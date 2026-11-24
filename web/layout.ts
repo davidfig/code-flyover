@@ -161,6 +161,26 @@ export function buildMap(
   return { root, nodes: live, fileNodes, byPath }
 }
 
+/**
+ * Every file on the map in reading order: a group at a time, its own files together and its folders in turn, going by
+ * where they sit (top to bottom, then left to right). Files go down each column; in the treemap, in the order they
+ * were placed.
+ */
+export function readingOrder(root: MapNode, columns: boolean): MapNode[] {
+  const out: MapNode[] = []
+  const near = (p: number, q: number) => Math.abs(p - q) < 0.5
+  const walk = (n: MapNode) => {
+    const files = n.children.filter((c) => c.kind === 'file')
+    if (columns) files.sort((p, q) => (near(p.x, q.x) ? p.y - q.y : p.x - q.x))
+    const blocks: { x: number; y: number; visit(): void }[] = n.children.filter((c) => c.kind !== 'file').map((c) => ({ x: c.x, y: c.y, visit: () => walk(c) }))
+    if (files.length) blocks.push({ x: Math.min(...files.map((f) => f.x)), y: Math.min(...files.map((f) => f.y)), visit: () => out.push(...files) })
+    blocks.sort((p, q) => (near(p.y, q.y) ? p.x - q.x : p.y - q.y))
+    for (const b of blocks) b.visit()
+  }
+  walk(root)
+  return out
+}
+
 function layout(n: MapNode) {
   if (n.kind === 'file' || n.children.length === 0) return
   const s = Math.min(n.w, n.h)
@@ -345,22 +365,37 @@ function shareColumn(nat: number[], max: number[], room: number): number[] {
   return h
 }
 
-interface Block {
-  /** its size: natural when packed, then grown into free space below and to the right */
+/** A way to lay something out: the size it takes, and how to put it at a place, filling at least that size. */
+interface Variant {
   w: number
   h: number
-  place(x: number, y: number): void
+  place(x: number, y: number, w: number, h: number): void
 }
 
+interface Packing {
+  w: number
+  h: number
+  at: { x: number; y: number }[]
+  /** which of each block's variants it uses */
+  pick: number[]
+}
+
+/** The shapes (width / height) a folder is offered in, for its parent to choose from. */
+const SHAPES = [0.3, 0.55, 0.9, ASPECT, 2.6, 4.5]
+/** Widths to try for a packing, against the one that would make it exactly the shape with no holes. */
+const WIDTHS = [0.92, 1, 1.08, 1.18, 1.3]
+/** The most the whole map is stretched to take the window's shape. */
+const MAX_STRETCH = 1.25
+/** Packings tried while improving one arrangement: plenty for the top level, few for each folder below it. */
+const TRIES_ROOT = 1500
+const TRIES_FOLDER = 60
+
 /**
- * Packs blocks into a width that makes the whole about `aspect` wide: biggest first, each dropped into the lowest
- * spot along the top edge built so far (the skyline) where it fits, leftmost on a tie. Fewer holes than rows.
- * Returns where each block went; nothing is placed yet.
+ * Packs blocks into `target` wide: biggest first, each dropped into the lowest spot along the top edge built so far
+ * (the skyline) where it fits, leftmost on a tie. Fewer holes than rows.
  */
-function skyline(blocks: Block[], gap: number, aspect: number): { at: { x: number; y: number }[]; width: number; height: number } {
-  const order = blocks.map((b, i) => i).sort((i, j) => blocks[j].h * blocks[j].w - blocks[i].h * blocks[i].w)
-  const area = blocks.reduce((t, b) => t + (b.w + gap) * (b.h + gap), 0)
-  const target = Math.max(...blocks.map((b) => b.w), Math.sqrt(area * aspect))
+function skyline(blocks: { w: number; h: number }[], gap: number, target: number): { at: { x: number; y: number }[]; w: number; h: number } {
+  const order = blocks.map((_, i) => i).sort((i, j) => blocks[j].h * blocks[j].w - blocks[i].h * blocks[i].w)
   // The skyline: runs of x with the y where the next block could start.
   let sky: { x: number; w: number; y: number }[] = [{ x: 0, w: target + gap, y: 0 }]
   const at: { x: number; y: number }[] = []
@@ -374,7 +409,7 @@ function skyline(blocks: Block[], gap: number, aspect: number): { at: { x: numbe
       if (seg.x + need > target + gap + 0.01) continue
       // The block rests on the highest run it would cover.
       let y = 0
-      for (const t of sky) if (t.x < seg.x + need && t.x + t.w > seg.x) y = Math.max(y, t.y)
+      for (const t of sky) if (t.x < seg.x + need - 0.01 && t.x + t.w > seg.x + 0.01) y = Math.max(y, t.y)
       if (!best || y < best.y - 0.01 || (Math.abs(y - best.y) < 0.01 && seg.x < best.x)) best = { x: seg.x, y }
     }
     const p = best ?? { x: 0, y: Math.max(...sky.map((t) => t.y)) }
@@ -402,220 +437,199 @@ function skyline(blocks: Block[], gap: number, aspect: number): { at: { x: numbe
       else sky.push({ ...t })
     }
   }
-  return { at, width, height }
+  return { at, w: width, h: height }
 }
 
 /**
- * `aspect` is the shape (width / height) the whole map aims for: the window's, so it fills the view. Folders aim
- * for ASPECT.
+ * The tightest packing found of blocks (each in one of its variants) for a window `shape` (width / height): the one
+ * that shows largest in such a window. Starts from the blocks all near one shape, at a few widths, then changes one
+ * block's variant at a time while that helps.
+ */
+function tightest(blocks: Variant[][], gap: number, shape: number, tries: number): Packing {
+  // What a window of this shape has to be to hold it, so smaller is denser and shows bigger; the area breaks ties.
+  const cost = (w: number, h: number) => Math.max(w, h * shape) + (w + h * shape) * 0.02
+  let left = tries
+  const pack = (pick: number[]): Packing & { cost: number } => {
+    const sized = blocks.map((v, i) => v[pick[i]])
+    const area = sized.reduce((t, b) => t + (b.w + gap) * (b.h + gap), 0)
+    const widest = Math.max(...sized.map((b) => b.w))
+    const seen = new Set<number>()
+    let best: (Packing & { cost: number }) | null = null
+    for (const f of WIDTHS) {
+      const target = Math.max(widest, Math.sqrt(area * shape) * f)
+      if (seen.has(target)) continue
+      seen.add(target)
+      left--
+      const p = skyline(sized, gap, target)
+      const c = cost(p.w, p.h)
+      if (!best || c < best.cost) best = { w: p.w, h: p.h, at: p.at, pick, cost: c }
+    }
+    return best!
+  }
+  const near = (v: Variant[], s: number) => v.reduce((best, o, i) => (Math.abs(Math.log(o.w / o.h / s)) < Math.abs(Math.log(v[best].w / v[best].h / s)) ? i : best), 0)
+  let best: (Packing & { cost: number }) | null = null
+  for (const s of [shape, ...SHAPES]) {
+    const p = pack(blocks.map((v) => near(v, s)))
+    if (!best || p.cost < best.cost) best = p
+  }
+  // The biggest blocks first: they decide the most.
+  const order = blocks.map((_, i) => i).sort((i, j) => blocks[j][0].w * blocks[j][0].h - blocks[i][0].w * blocks[i][0].h)
+  for (let improved = true; improved && left > 0; ) {
+    improved = false
+    for (const i of order) {
+      for (let o = 0; o < blocks[i].length && left > 0; o++) {
+        if (o === best!.pick[i]) continue
+        const p = pack(best!.pick.map((v, j) => (j === i ? o : v)))
+        if (p.cost < best!.cost - 0.01) {
+          best = p
+          improved = true
+        }
+      }
+    }
+  }
+  return best!
+}
+
+/** Drops the variants another beats both ways, and near-duplicates. */
+function pareto(all: Variant[]): Variant[] {
+  const out: Variant[] = []
+  for (const v of all.sort((x, y) => x.w - y.w || x.h - y.h)) if (!out.length || v.h < out[out.length - 1].h * 0.995) out.push(v)
+  return out
+}
+
+/**
+ * Lays the map out for a window `aspect` (width / height): as tightly as it can, so every box is as big as possible
+ * with the whole map in view. Bottom up, each folder works out a few shapes it could take; its parent picks among
+ * them. Then, top down, what space is left over (holes, the last bit of the window) is shared out.
  */
 function layoutColumns(root: MapNode, a: Analysis, aspect = ASPECT) {
   const COL_W = colW()
-  /** each child's position relative to its parent's content area */
-  const local = new Map<MapNode, { x: number; y: number }>()
-  const inset = (n: MapNode) => (n.kind === 'root' ? { x: 0, y: 0 } : { x: PAD, y: PAD })
-  const natural = new Map<MapNode, number>()
-  /** the tallest a file's box can be before it would run out of text to show (see fileHeight) */
-  const most = new Map<MapNode, number>()
-  /** how much there is to read under a node: its files' column area at their natural heights */
-  const contentOf = (n: MapNode): number => (n.kind === 'file' ? COL_W * (natural.get(n) ?? 0) : n.children.reduce((t, c) => t + contentOf(c), 0))
-  /** a module's chosen shape, kept so laying out its parent (or growing it) doesn't reset it */
-  const shapeOf = new Map<MapNode, number>()
-
-  /**
-   * Lays out `n`'s contents, aiming for `shape` (width / height). With `forcedH` or `forcedW` its contents are
-   * stretched to fill that size (the space around it was free).
-   */
-  const size = (n: MapNode, forcedH?: number, shape = ASPECT, forcedW?: number): void => {
-    if (n.kind === 'file') {
-      const fh = fileHeight(a.files[n.file!])
-      n.w = COL_W
-      n.h = fh.h
-      natural.set(n, fh.h)
-      most.set(n, fh.max)
-      return
-    }
-    const gap = n.kind === 'root' ? ROOT_GAP : GAP
-    const files = n.children.filter((c) => c.kind === 'file').sort((x, y) => x.path.localeCompare(y.path))
-    const groups = n.children.filter((c) => c.kind !== 'file')
-    const blocks: Block[] = []
-    if (files.length) {
-      for (const f of files) size(f)
-      // Balanced columns: enough of them to make the block about the folder's shape (or, if the folder was given
-      // a size, as many as fit across it), each file into the shortest.
-      const total = files.reduce((t, f) => t + f.h + GAP, 0)
-      const fit = forcedW !== undefined && groups.length === 0 ? Math.floor((forcedW - inset(n).x * 2 + GAP) / (COL_W + GAP)) : 0
-      const count = Math.max(1, Math.min(files.length, fit || Math.round(Math.sqrt((Math.min(shape, 8) * total) / COL_W))))
-      /** files into `k` balanced columns, each into the shortest so far */
-      const balance = (k: number) => {
-        const cols: MapNode[][] = Array.from({ length: k }, () => [])
-        const heights = new Array<number>(k).fill(0)
-        for (const f of files) {
-          const c = heights.indexOf(Math.min(...heights))
-          cols[c].push(f)
-          heights[c] += natural.get(f)! + GAP
-        }
-        return { cols, height: Math.max(...heights) - GAP }
-      }
-      const packedCols = balance(count)
-      const block: Block = {
-        w: count * COL_W + (count - 1) * GAP,
-        h: packedCols.height,
-        // Grown wider than its columns (to fill a hole beside it): more columns where whole ones fit, so no column is
-        // much wider than its code. Every column shares the block's width, and its files share the block's height up
-        // to what they have to show (shareColumn); what's left over stays empty at the column's foot.
-        place: (x, y) => {
-          const k = Math.max(1, Math.min(files.length, Math.floor((block.w + GAP + 0.5) / (COL_W + GAP))))
-          const { cols } = k === count ? packedCols : balance(k)
-          const colW = (block.w - (k - 1) * GAP) / k
-          cols.forEach((col, c) => {
-            const hs = shareColumn(col.map((f) => natural.get(f)!), col.map((f) => most.get(f)!), block.h - GAP * (col.length - 1))
-            let yy = y
-            col.forEach((f, i) => {
-              f.w = colW
-              f.h = hs[i]
-              local.set(f, { x: x + c * (colW + GAP), y: yy })
-              yy += f.h + GAP
-            })
-          })
-        },
-      }
-      blocks.push(block)
-    }
-    for (const g of groups) {
-      size(g, undefined, shapeOf.get(g))
-      const nat = { w: g.w, h: g.h }
-      const block: Block = {
-        w: g.w,
-        h: g.h,
-        place: (x, y) => {
-          // Grown: lay it out again at its new size, so its own contents fill it too.
-          // Re-arranged for its new shape (so a narrow, tall box gets fewer, longer columns, not stretched bars),
-          // unless that doesn't fit in the space it was given: then the arrangement it packed with, which does.
-          if (Math.abs(block.w - nat.w) > 0.5 || Math.abs(block.h - nat.h) > 0.5) {
-            size(g, block.h, block.w / block.h, block.w)
-            if (g.w > block.w + 0.5 || g.h > block.h + 0.5) size(g, block.h, shapeOf.get(g), block.w)
-          }
-          local.set(g, { x, y })
-        },
-      }
-      blocks.push(block)
-    }
-    const packed = skyline(blocks, gap, shape)
-    const packedW = blocks.map((b) => b.w)
-    const i = inset(n)
-    const bottom = n.kind === 'root' ? 0 : PAD
-    const contentH = forcedH !== undefined ? Math.max(forcedH - i.y - bottom, packed.height) : packed.height
-    const contentW = forcedW !== undefined ? Math.max(forcedW - i.x * 2, packed.width) : packed.width
-    const at = packed.at
-    // When the box is bigger than its packed contents (stretched to fill its parent or the window), spread the
-    // extra over every block in proportion to its size, keeping the gaps: so no one block at the edge soaks it all
-    // up. Scaling every position and size alike can't make blocks overlap.
-    const fw = (contentW + gap) / (packed.width + gap)
-    const fh = (contentH + gap) / (packed.height + gap)
-    if (fw > 1.0001 || fh > 1.0001) {
-      blocks.forEach((b, k) => {
-        at[k] = { x: at[k].x * fw, y: at[k].y * fh }
-        b.w = (b.w + gap) * fw - gap
-        b.h = (b.h + gap) * fh - gap
-      })
-    }
-    // Modules side by side in one row share the width by how much changed in each (the area of their files'
-    // columns), not by how they happened to pack: the busier module gets the room. None goes narrower than its
-    // packed width, and what that leaves is shared among the rest the same way.
-    if (n.kind === 'root' && blocks.length > 1 && blocks.length === groups.length && at.every((p) => Math.abs(p.y) < 0.01)) {
-      const content = groups.map((g) => contentOf(g))
-      const order = blocks.map((_, k) => k).sort((p, q) => at[p].x - at[q].x)
-      const minW = blocks.map((b, k) => packedW[k])
-      const room = contentW + gap
-      let free = order.slice()
-      const width = new Array<number>(blocks.length).fill(0)
-      for (let pass = 0; pass < blocks.length; pass++) {
-        const fixed = order.filter((k) => !free.includes(k)).reduce((t, k) => t + width[k] + gap, 0)
-        const share = free.reduce((t, k) => t + content[k], 0)
-        let changed = false
-        for (const k of free) width[k] = ((room - fixed) * content[k]) / share - gap
-        for (const k of free) if (width[k] < minW[k]) { width[k] = minW[k]; free = free.filter((j) => j !== k); changed = true }
-        if (!changed) break
-      }
-      let x = 0
-      for (const k of order) {
-        at[k] = { x, y: 0 }
-        blocks[k].w = width[k]
-        x += width[k] + gap
-      }
-    }
-    // Packing leaves holes: a row that doesn't reach the right edge, a block shorter than its neighbours. Each block
-    // grows right, then down, into free space up to the next block or the edge, so the folder's background doesn't
-    // show through. A file only grows as far as it has text to show (shareColumn) and a wider file block gains columns,
-    // so this doesn't make tall empty boxes; folders lay themselves out again at the new size.
-    const overlaps = (a0: number, a1: number, b0: number, b1: number) => a0 < b1 - 0.01 && b0 < a1 - 0.01
-    const byRight = blocks.map((_, k) => k).sort((p, q) => at[q].x + blocks[q].w - (at[p].x + blocks[p].w))
-    for (const k of byRight) {
-      const b = blocks[k]
-      let limit = contentW
-      blocks.forEach((o, j) => {
-        if (j !== k && at[j].x >= at[k].x + b.w - 0.01 && overlaps(at[k].y, at[k].y + b.h, at[j].y, at[j].y + o.h)) limit = Math.min(limit, at[j].x - gap)
-      })
-      b.w = Math.max(b.w, limit - at[k].x)
-    }
-    const byBottom = blocks.map((_, k) => k).sort((p, q) => at[q].y + blocks[q].h - (at[p].y + blocks[p].h))
-    for (const k of byBottom) {
-      const b = blocks[k]
-      let limit = contentH
-      blocks.forEach((o, j) => {
-        if (j !== k && at[j].y >= at[k].y + b.h - 0.01 && overlaps(at[k].x, at[k].x + b.w, at[j].x, at[j].x + o.w)) limit = Math.min(limit, at[j].y - gap)
-      })
-      b.h = Math.max(b.h, limit - at[k].y)
-    }
-    blocks.forEach((b, k) => b.place(at[k].x, at[k].y))
-    n.w = contentW + i.x * 2
-    n.h = contentH + i.y + bottom
-  }
-  // The top level aims for the window. With a few modules of very different sizes, packing alone often can't get
-  // there (a big module and a small one stack, whatever the window). So try two arrangements and keep the one that
-  // covers more of the window with files at the whole-map view: (A) modules at their own shape, packed; (B) modules
-  // in one row, each shaped by its share of the total area so the row comes out the window's shape.
-  const filesArea = (n: MapNode): number => (n.kind === 'file' ? n.w * n.h : n.children.reduce((t, c) => t + filesArea(c), 0))
-  const covered = () => {
-    const shape = root.w / root.h
-    return (filesArea(root) / (root.w * root.h)) * Math.min(shape / aspect, aspect / shape)
-  }
-  // (C) is the biggest module at the window's shape and the rest packed around it, for one module that dominates.
-  type Plan = { shapes: Map<MapNode, number>; rootShape: number }
-  const plans: Plan[] = [{ shapes: new Map(), rootShape: aspect }]
-  for (const m of root.children) size(m)
-  const total = root.children.reduce((t, m) => t + m.w * m.h, 0)
-  if (root.children.length > 1 && total > 0) {
-    plans.push({ shapes: new Map(root.children.map((m) => [m, Math.max(0.25, (aspect * m.w * m.h) / total)])), rootShape: Infinity })
-    const biggest = root.children.reduce((x, y) => (y.w * y.h > x.w * x.h ? y : x))
-    plans.push({ shapes: new Map([[biggest, aspect]]), rootShape: aspect })
-  }
-  const apply = (p: Plan) => {
-    shapeOf.clear()
-    for (const [m, v] of p.shapes) shapeOf.set(m, v)
-    size(root, undefined, p.rootShape)
-    return covered()
-  }
-  let best = plans[0]
-  let bestCover = -1
-  for (const p of plans) {
-    const c = apply(p)
-    if (c > bestCover) { best = p; bestCover = c }
-  }
-  apply(best)
-  // Then stretch the whole map to the window's shape, so nothing around it is blank either.
-  if (root.w / root.h < aspect) size(root, undefined, best.rootShape, root.h * aspect)
-  else size(root, root.w / aspect, best.rootShape)
-
-  const place = (n: MapNode, x: number, y: number) => {
+  const heights = new Map<MapNode, { h: number; max: number }>()
+  const set = (n: MapNode, x: number, y: number, w: number, h: number) => {
     n.x = x
     n.y = y
-    const i = inset(n)
-    for (const c of n.children) {
-      const p = local.get(c)!
-      place(c, x + i.x + p.x, y + i.y + p.y)
-    }
+    n.w = w
+    n.h = h
   }
-  place(root, 0, 0)
+
+  /** A folder's own files, in every number of equal-width columns worth trying. */
+  const fileVariants = (files: MapNode[]): Variant[] => {
+    for (const f of files) heights.set(f, fileHeight(a.files[f.file!]))
+    // Longest first into the shortest column, which balances them best; then each column in path order.
+    const longest = [...files].sort((p, q) => heights.get(q)!.h - heights.get(p)!.h || p.path.localeCompare(q.path))
+    const balanced = new Map<number, { cols: MapNode[][]; height: number }>()
+    const balance = (k: number) => {
+      let b = balanced.get(k)
+      if (!b) {
+        const cols: MapNode[][] = Array.from({ length: k }, () => [])
+        const sum = new Array<number>(k).fill(0)
+        for (const f of longest) {
+          const c = sum.indexOf(Math.min(...sum))
+          cols[c].push(f)
+          sum[c] += heights.get(f)!.h + GAP
+        }
+        for (const col of cols) col.sort((p, q) => p.path.localeCompare(q.path))
+        cols.sort((p, q) => p[0].path.localeCompare(q[0].path))
+        balanced.set(k, (b = { cols, height: Math.max(...sum) - GAP }))
+      }
+      return b
+    }
+    const counts = new Set<number>()
+    for (let k = 1; k <= files.length; k = k < 12 ? k + 1 : Math.ceil(k * 1.15)) counts.add(k)
+    return pareto([...counts].map((k) => ({
+      w: k * COL_W + (k - 1) * GAP,
+      h: balance(k).height,
+      // Given more width than its columns: more of them where whole ones fit, so none is much wider than its code.
+      // Every column shares the width, and its files share the height up to what they have to show (shareColumn);
+      // what's left over stays empty at the column's foot.
+      place: (x, y, w, h) => {
+        const n = Math.max(k, Math.min(files.length, Math.floor((w + GAP + 0.5) / (COL_W + GAP))))
+        const { cols } = balance(n)
+        const cw = (w - (n - 1) * GAP) / n
+        cols.forEach((col, c) => {
+          const hs = shareColumn(col.map((f) => heights.get(f)!.h), col.map((f) => heights.get(f)!.max), h - GAP * (col.length - 1))
+          let yy = y
+          col.forEach((f, i) => {
+            set(f, x + c * (cw + GAP), yy, cw, hs[i])
+            yy += hs[i] + GAP
+          })
+        })
+      },
+    })))
+  }
+
+  /** The blocks a module or folder is made of: its own files, and each folder in it. */
+  const blocksOf = (n: MapNode): Variant[][] => {
+    const files = n.children.filter((c) => c.kind === 'file')
+    const blocks = n.children.filter((c) => c.kind !== 'file').map(variants)
+    if (files.length) blocks.push(fileVariants(files))
+    return blocks
+  }
+
+  const variants = (n: MapNode): Variant[] => {
+    const blocks = blocksOf(n)
+    const inset = (w: number, h: number, put: (x: number, y: number, w: number, h: number) => void): Variant => ({
+      w: w + PAD * 2,
+      h: h + PAD * 2,
+      place: (x, y, ow, oh) => {
+        set(n, x, y, ow, oh)
+        put(x + PAD, y + PAD, ow - PAD * 2, oh - PAD * 2)
+      },
+    })
+    if (blocks.length === 1) return fitting(blocks[0].map((v) => inset(v.w, v.h, v.place)))
+    return fitting(pareto(SHAPES.map((s) => {
+      const p = tightest(blocks, GAP, s, TRIES_FOLDER)
+      return inset(p.w, p.h, (x, y, w, h) => spread(blocks, p, GAP, x, y, w, h))
+    })))
+  }
+
+  /** Variants that, given more room than they need, give way to whichever of them fills that room best. */
+  const fitting = (all: Variant[]): Variant[] =>
+    all.map((v) => ({
+      w: v.w,
+      h: v.h,
+      place: (x, y, w, h) => {
+        let best = v
+        for (const o of all) if (o.w <= w + 0.5 && o.h <= h + 0.5 && Math.min(o.w / w, o.h / h) > Math.min(best.w / w, best.h / h)) best = o
+        best.place(x, y, w, h)
+      },
+    }))
+
+  /** Places a packing in a box at least its size, sharing the spare room out so little is left blank. */
+  const spread = (blocks: Variant[][], p: Packing, gap: number, x: number, y: number, w: number, h: number) => {
+    // Every block takes its part of the extra, in proportion to its size, keeping the gaps: so no one block at the
+    // edge soaks it all up. Scaling every position and size alike can't make blocks overlap.
+    const fw = (w + gap) / (p.w + gap)
+    const fh = (h + gap) / (p.h + gap)
+    const box = blocks.map((v, i) => {
+      const b = v[p.pick[i]]
+      return { x: p.at[i].x * fw, y: p.at[i].y * fh, w: (b.w + gap) * fw - gap, h: (b.h + gap) * fh - gap }
+    })
+    // Packing leaves holes: a row that doesn't reach the right edge, a block shorter than its neighbours. Each block
+    // grows down, then right, up to the next block or the edge. (Down first: a taller file shows more of itself, a
+    // wider one mostly more blank.)
+    const overlaps = (a0: number, a1: number, b0: number, b1: number) => a0 < b1 - 0.01 && b0 < a1 - 0.01
+    for (const b of [...box].sort((s, t) => t.y + t.h - (s.y + s.h))) {
+      let limit = h
+      for (const o of box) if (o !== b && o.y >= b.y + b.h - 0.01 && overlaps(b.x, b.x + b.w, o.x, o.x + o.w)) limit = Math.min(limit, o.y - gap)
+      b.h = Math.max(b.h, limit - b.y)
+    }
+    for (const b of [...box].sort((s, t) => t.x + t.w - (s.x + s.w))) {
+      let limit = w
+      for (const o of box) if (o !== b && o.x >= b.x + b.w - 0.01 && overlaps(b.y, b.y + b.h, o.y, o.y + o.h)) limit = Math.min(limit, o.x - gap)
+      b.w = Math.max(b.w, limit - b.x)
+    }
+    box.forEach((b, i) => blocks[i][p.pick[i]].place(x + b.x, y + b.y, b.w, b.h))
+  }
+
+  const blocks = blocksOf(root)
+  if (!blocks.length) {
+    set(root, 0, 0, WORLD_W, WORLD_H)
+    return
+  }
+  const p = tightest(blocks, ROOT_GAP, aspect, TRIES_ROOT)
+  // The whole map takes the window's shape, so nothing around it is blank either; but only so far, or a few files on
+  // a wide screen would be mostly blank boxes.
+  set(root, 0, 0, Math.min(Math.max(p.w, p.h * aspect), p.w * MAX_STRETCH), Math.min(Math.max(p.h, p.w / aspect), p.h * MAX_STRETCH))
+  spread(blocks, p, ROOT_GAP, 0, 0, root.w, root.h)
 }

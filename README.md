@@ -46,7 +46,7 @@ Then:
 
 1. **Pick a branch** in the header. Branches are listed newest first, with how far ahead of the base they are. Its map is built on the spot, usually in about a second.
 2. **Pick the base** under **compared with** in the side panel. The default is the remote's default branch, such as `origin/main`.
-3. **Fly around.** Hover a change card to outline its files, and click it to zoom there. Double-click any box to read it full width. Press `j`/`k` to step through findings and `Esc` to clear the selection. **Fit** resets the view, and **Changes | Whole repo** (or `U`) switches between the files the branch changes and the whole repo. The **Show** list picks which kinds of files are on the map: **Code** and **Docs** (Markdown and text) to start with, plus **Tests** and **Translations** (keys `C`, `D`, `T`, `L`).
+3. **Fly around.** Hover a change card to outline its files, and click it to zoom there. Double-click any box to read it full width. Press `→`/`←` to move to the next or previous file and `↓`/`↑` for the next or previous section, at the same zoom, `j`/`k` to step through findings and `Esc` to clear the selection. **Fit** resets the view, and **Changes | Whole repo** (or `U`) switches between the files the branch changes and the whole repo. The **Show** list picks which kinds of files are on the map: **Code** and **Docs** (Markdown and text) to start with, plus **Tests** and **Translations** (keys `C`, `D`, `T`, `L`).
 
 A branch checked out in a worktree with uncommitted changes is shown with those changes included. The map stays live: when the branch, its uncommitted files or its base change, it's rebuilt within a few seconds.
 

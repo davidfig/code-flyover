@@ -5,7 +5,7 @@
 // No rendering or camera library: see web/gl/.
 
 import type { Analysis, ChangeSet, FileEdge, FileInfo, FileRole, RepoNote } from '../shared/types.ts'
-import { buildMap, roleOf, type MapNode } from './layout.ts'
+import { buildMap, readingOrder, roleOf, type MapNode } from './layout.ts'
 import { CODE_PX, colW, settings, type SettingKey } from './settings.ts'
 import { Camera, type Rect } from './gl/camera.ts'
 import { attachInput } from './gl/input.ts'
@@ -110,10 +110,22 @@ interface TextState {
   offset: number
   /** the visible text area's height, text px */
   visH: number
+  /** selected, readable and too long for the visible area: it has a full-size scroll bar, and wraps short of it */
+  bar: boolean
   /** where it was drawn: the visible text area, and where text px (0, 0) is, in CSS px on the map (null: not drawn) */
   clip: { x: number; y: number; w: number; h: number } | null
   originX: number
   originY: number
+}
+
+/** A file's scroll bar, in CSS px on the map: its width, the visible part of the box it's beside, and its thumb. */
+interface Bar {
+  id: number
+  st: TextState
+  w: number
+  clip: { x: number; y: number; w: number; h: number }
+  thumb: number
+  top: number
 }
 
 interface View {
@@ -148,6 +160,7 @@ const C = {
   imports: 0x1a9a8a,
   importers: 0x8a5cc8,
   select: 0x1f6feb,
+  scroll: 0x3c3933,
 }
 
 /**
@@ -167,6 +180,21 @@ function setClass(el: HTMLElement, value: string) {
   if (el.className !== value) el.className = value
 }
 const px = (v: number) => `${Math.round(v * 2) / 2}px`
+
+/** How much of the window the whole map fills: close to all of it, with a thin margin to show it's everything. */
+const MAP_FILL = 0.96
+/** How far the window's shape can drift from the one the map was laid out for before it's laid out again. */
+const RESHAPE = 1.05
+const RESHAPE_MS = 200
+
+/**
+ * A file's scroll bar: its track's width and its thumb's shortest, in CSS px for the selected file. On the others it's
+ * as wide in text px, so it shrinks with their text, down to BAR_MIN_W, and can be dragged from BAR_GRAB_W up.
+ */
+const BAR_W = 12
+const BAR_MIN_THUMB = 28
+const BAR_MIN_W = 2
+const BAR_GRAB_W = 5
 
 /** Runs `cb` when the browser is idle (Safari has no requestIdleCallback: a short timeout stands in). */
 function idle(cb: (deadline: { timeRemaining(): number }) => void) {
@@ -273,6 +301,15 @@ export class ZoomMap {
   /** the current wheel gesture: when its last event came, and the file it's scrolling (null: the map) */
   private wheelGesture = { last: -Infinity, file: null as number | null }
   private userMoved = false
+  /** the window's shape (width / height) the map is laid out for, and a re-layout booked for when a resize settles */
+  private laidOutFor = 0
+  private reshapeTimer: ReturnType<typeof setTimeout> | null = null
+  /** files whose text is longer than their box: they wrap short of a scroll bar's width, and show one */
+  private scrolls = new Set<number>()
+  /** the scroll bar you can drag (the rest are drawn): the hovered file's, or the selected one's */
+  private barHover: number | null = null
+  private bar = document.createElement('div')
+  private barThumb = document.createElement('div')
 
   constructor(private host: HTMLElement, private events: MapEvents) {
     this.labels = document.createElement('div')
@@ -303,6 +340,7 @@ export class ZoomMap {
     this.host.appendChild(this.overlay)
     this.host.appendChild(this.labels)
     this.host.appendChild(this.changesLayer)
+    this.attachBar()
     this.tip.className = 'file-tip'
     this.tip.hidden = true
     this.host.appendChild(this.tip)
@@ -311,8 +349,14 @@ export class ZoomMap {
       if (e.buttons) return this.hideTip()
       const r = this.host.getBoundingClientRect()
       this.hoverLabel(e.clientX - r.left, e.clientY - r.top)
+      this.hoverBar(e.clientX - r.left, e.clientY - r.top)
     })
     this.host.addEventListener('pointerleave', () => this.hideTip())
+    // The arrow keys belong to the map while it has the focus: it takes it when pressed (or tabbed to).
+    this.host.tabIndex = 0
+    this.host.addEventListener('pointerdown', (e) => {
+      if (!(e.target as Element).closest('button, a, input, select')) this.focusMap()
+    })
     attachInput(this.host, this.camera, {
       changed: () => {
         this.hideTip() // the label it belongs to has moved
@@ -358,6 +402,11 @@ export class ZoomMap {
       if (!this.userMoved && this.root) this.fitAll(false)
       this.frame() // straight away: the resize wiped the canvas (and before a branch loads, it clears it to the background)
       this.schedule()
+      // A new window shape: lay the map out for it once the resize settles (not mid-drag, which would shuffle it).
+      if (this.reshapeTimer) clearTimeout(this.reshapeTimer)
+      this.reshapeTimer = setTimeout(() => {
+        if (!this.userMoved) this.reshape()
+      }, RESHAPE_MS)
     }
     new ResizeObserver(resize).observe(this.host)
     resize()
@@ -393,6 +442,7 @@ export class ZoomMap {
     const whole = this.opts.showUnchanged || nothingChanged
     const shown = whole ? undefined : touched(a, this.opts.showImpacted, hide)
     this.wholeRepo = whole
+    this.laidOutFor = view.width / view.height
     const m = buildMap(a, hide, shown, view)
     this.root = m.root
     this.nodes = m.nodes
@@ -414,6 +464,8 @@ export class ZoomMap {
     this.highlightEdge = null
     this.focus = false
     this.textStates.clear()
+    this.scrolls.clear()
+    this.barHover = null
     this.cache.reset()
     this.nodeByFile = new Map(this.fileNodes.map((n) => [n.file!, n]))
     this.buildGeneration++
@@ -527,7 +579,7 @@ export class ZoomMap {
     this.cardsPlaced = true
     const s = this.fitScale
     const r = { x: this.root.x, y: this.root.y, w: this.root.w, h: this.root.h }
-    const view = this.camera.fitted(r)
+    const view = this.camera.fitted(r, MAP_FILL)
     const W = this.camera.width
     const H = this.camera.height
     const placed: { x0: number; y0: number; x1: number; y1: number }[] = []
@@ -586,6 +638,24 @@ export class ZoomMap {
     this.schedule()
   }
 
+  /**
+   * Lays the map out again if the window's shape has changed enough to leave it sparse. Not while something is
+   * selected or being looked at: that would lose it. True if it did.
+   */
+  private reshape(): boolean {
+    if (!this.a || this.wholeRepo || this.selected || this.zoomed || this.highlight.length) return false
+    const drift = this.camera.width / this.camera.height / this.laidOutFor
+    if (!(Math.max(drift, 1 / drift) > RESHAPE)) return false
+    this.load(this.a)
+    return true
+  }
+
+  /** The Fit button: the whole map, laid out for the window as it is now. */
+  fitWindow() {
+    this.zoomed = false
+    if (!this.reshape()) this.fitAll()
+  }
+
   fitAll(animate = true) {
     if (animate) this.userMoved = false
     this.zoomed = false
@@ -593,11 +663,11 @@ export class ZoomMap {
     // The fit is clamped to the camera's limits, and the zoom-out limit is the previous fit's: for a bigger map (another
     // branch, more files shown) it would stop short of the whole map. Lift it first.
     this.camera.minScale = 0
-    const fit = this.camera.fitted(r).scale
+    const fit = this.camera.fitted(r, MAP_FILL).scale
     if (Math.abs(fit - this.fitScale) > 1e-9) this.cardsPlaced = false // a new whole-map zoom: place the cards again
     this.fitScale = fit
     this.camera.minScale = this.fitScale * 0.3
-    this.camera.fit(r, animate ? FLY_MS() : 0)
+    this.camera.fit(r, animate ? FLY_MS() : 0, MAP_FILL)
     this.schedule()
   }
 
@@ -655,6 +725,64 @@ export class ZoomMap {
     this.selected = n
     this.linked = this.linksOf(n)
     this.schedule()
+  }
+
+  /**
+   * The arrow keys: selects the next (or previous) file in reading order, or with `section` the first file of the next
+   * (or previous) section, a section being the files directly in one folder. Slides the view, at the same zoom, so
+   * the file's top-left corner lands where the last one's was. From a selected folder, its first file (or the one, or
+   * the section, before it); with nothing selected, the first file in view, without moving. False at either end.
+   */
+  step(by: 1 | -1, section = false): boolean {
+    if (!this.a) return false
+    const order = readingOrder(this.root, !this.wholeRepo)
+    const from = this.selected
+    // Measured in the view a flight is heading for, so pressing again mid-flight carries on from there.
+    const goal = this.camera.goal
+    const at = { x: goal.x, y: goal.y, scale: goal.scale }
+    const W = this.camera.width / at.scale
+    const H = this.camera.height / at.scale
+    let next: MapNode | undefined
+    if (!from) {
+      next = order.find((n) => n.x + n.w > at.x && n.x < at.x + W && n.y + n.h > at.y && n.y < at.y + H)
+      if (next) this.select(next)
+      return !!next
+    }
+    const sectionStart = (i: number) => {
+      while (i > 0 && order[i - 1].parent === order[i].parent) i--
+      return i
+    }
+    if (from.kind === 'file') {
+      let i = order.indexOf(from) + by
+      if (section) while (order[i] && order[i].parent === from.parent) i += by
+      next = order[section && order[i] ? sectionStart(i) : i]
+    } else {
+      const inside = (n: MapNode) => {
+        for (let p = n.parent; p; p = p.parent) if (p === from) return true
+        return false
+      }
+      const first = order.findIndex(inside)
+      next = order[by > 0 ? first : section && first > 0 ? sectionStart(first - 1) : first - 1]
+    }
+    if (!next) return false
+    // Where the last one's corner is on screen. If that's off the window (it was panned, or never in view), the
+    // window's own corner stands in, so the next file's first line is always in sight.
+    const edge = -(SELECT_PX + 1) // how far outside the window reading a file puts its corner (see readBox)
+    const spot = (v: number, size: number) => (v < edge || v > size * 0.9 ? edge : v)
+    const sx = spot((from.x - at.x) * at.scale, this.camera.width)
+    const sy = spot((from.y - at.y) * at.scale, this.camera.height)
+    const st = this.textStates.get(next.file!)
+    if (st) st.offset = 0
+    this.hideTip()
+    this.highlight = []
+    this.highlightEdge = null
+    this.focus = false
+    this.zoomed = true
+    this.userMoved = true
+    this.select(next)
+    this.camera.flyTo({ x: next.x - sx / at.scale, y: next.y - sy / at.scale, scale: at.scale }, FLY_MS())
+    this.schedule()
+    return true
   }
 
   /** The boxes a selected file imports, and those that import it (not imports the branch removed). */
@@ -778,6 +906,7 @@ export class ZoomMap {
     og.clearColor(0, 0, 0, 0)
     og.clear(og.COLOR_BUFFER_BIT)
     this.drawEdges()
+    this.drawBars(vb)
     this.drawSelection()
     this.shapes.flush(this.overlay.width, this.overlay.height)
     this.drawLabels(vb, s, path)
@@ -1190,11 +1319,20 @@ export class ZoomMap {
       const visRight = Math.min(sx + w, W)
       if (visRight - visLeft < 2) continue
       // Lay out at the width it wraps at: the box's, or for the selected file the visible part's.
-      const wrap = selected ? (visRight - visLeft) / k : w / k
+      // A scroll bar takes some of that. (Narrower text is never shorter, so making room can't undo the need for it.)
+      const bar = selected && this.readable() && !!this.textStates.get(id)?.bar && visRight - visLeft > BAR_W * 4
+      let wrap = this.wrapOf(n)
+      if (selected) {
+        // In a flight, the part that will be on screen when it lands: else it would wrap again on every frame.
+        const to = this.camera.goal
+        const left = Math.max((n.x - to.x) * to.scale, 0)
+        const right = Math.min((n.x + n.w - to.x) * to.scale, W)
+        if (right - left >= 2) wrap = ((right - left - (bar ? BAR_W : 0)) * s) / (to.scale * k)
+      }
       this.text.want(id, wrap, (n.h * DIFF_W()) / this.medianFileW)
       let st = this.textStates.get(id)
       if (!st) {
-        st = { k, hidden: 0, offset: 0, visH: 0, clip: null, originX: 0, originY: 0 }
+        st = { k, hidden: 0, offset: 0, visH: 0, bar: false, clip: null, originX: 0, originY: 0 }
         this.textStates.set(id, st)
       }
       const contentH = this.text.get(id)?.height ?? 0
@@ -1203,6 +1341,11 @@ export class ZoomMap {
       st.visH = (visBottom - visTop) / k
       const scroll = Math.max(0, Math.min(st.hidden + st.offset, Math.max(0, contentH - st.visH)))
       st.offset = scroll - st.hidden
+      const needsBar = selected && this.readable() && (contentH - st.visH) * k > 1
+      if (needsBar !== st.bar) {
+        st.bar = needsBar
+        this.schedule() // wrap to make (or take back) its room
+      }
       st.originX = selected ? visLeft : sx
       st.originY = visTop - scroll * k
       st.clip = { x: visLeft, y: visTop, w: visRight - visLeft, h: visBottom - visTop }
@@ -1212,6 +1355,177 @@ export class ZoomMap {
       })
     }
     this.text.draw(list, viewport)
+  }
+
+  /** The width a file's text wraps at in its own box, text px: short of its scroll bar, if it has one. */
+  private wrapOf(n: MapNode): number {
+    return (n.w * DIFF_W()) / this.medianFileW - (this.scrolls.has(n.file!) ? BAR_W : 0)
+  }
+
+  /** Finds the files whose text has turned out longer than their box. They wrap again, to make room for a bar. */
+  private findScrolls() {
+    const u = DIFF_W() / this.medianFileW
+    let found = false
+    for (const n of this.fileNodes) {
+      const id = n.file!
+      const t = this.text.get(id)
+      // Judged by its own box's width: the selected file can be wrapped narrower, to the window's edge.
+      if (!t?.height || this.scrolls.has(id) || t.width < n.w * u - 1 || n.w * u < BAR_W * 4) continue
+      if (t.height <= n.h * u + 1) continue
+      this.scrolls.add(id)
+      this.text.want(id, this.wrapOf(n), n.h * u)
+      found = true
+    }
+    if (found) {
+      this.cache.dirty = true
+      this.schedule()
+    }
+  }
+
+  /** How far the file's text is scrolled and can scroll, text px. */
+  private scrollOf(id: number, st: TextState): { at: number; max: number } {
+    return { at: st.hidden + st.offset, max: Math.max(0, (this.text.get(id)?.height ?? 0) - st.visH) }
+  }
+
+  private scrollTo(id: number, st: TextState, at: number) {
+    st.offset = Math.max(0, Math.min(at, this.scrollOf(id, st).max)) - st.hidden
+    this.schedule()
+  }
+
+  /** A file's scroll bar, if it has one on screen: over the right edge of the part of its box that's in view. */
+  private barOf(n: MapNode, vb: View): Bar | null {
+    if (n.kind !== 'file') return null
+    const id = n.file!
+    const s = this.camera.scale
+    const k = this.textScale()
+    const full = this.selected === n && this.readable()
+    let st = this.textStates.get(id)
+    if (full ? !st?.bar : !this.scrolls.has(id)) return null
+    const left = Math.max((n.x - vb.x) * s, 0)
+    const top = Math.max((n.y - vb.y) * s, 0)
+    const clip = { x: left, y: top, w: Math.min((n.x + n.w - vb.x) * s, this.camera.width) - left, h: Math.min((n.y + n.h - vb.y) * s, this.camera.height) - top }
+    const w = full ? BAR_W : Math.max(BAR_MIN_W, Math.min(BAR_W, BAR_W * k))
+    if (clip.w < w * 4 || clip.h < w * 2) return null
+    if (!st) {
+      st = { k, hidden: 0, offset: 0, visH: 0, bar: false, clip: null, originX: 0, originY: 0 }
+      this.textStates.set(id, st)
+    }
+    st.k = k
+    st.hidden = Math.max(0, (vb.y - n.y) * s) / k
+    st.visH = clip.h / k
+    const { at, max } = this.scrollOf(id, st)
+    if (max <= 0) return null
+    const shortest = Math.min(BAR_MIN_THUMB, BAR_MIN_THUMB * (w / BAR_W), clip.h / 2)
+    const thumb = Math.max(shortest, (clip.h * st.visH) / (max + st.visH))
+    return { id, st, w, clip, thumb, top: (Math.min(at, max) / max) * (clip.h - thumb) }
+  }
+
+  private get view(): View {
+    const v = this.camera.view
+    return { x: v.x, y: v.y, width: v.w, height: v.h }
+  }
+
+  /** The bar that can be dragged now. */
+  private barState(): Bar | null {
+    const hovered = this.barHover === null ? undefined : this.nodeByFile.get(this.barHover)
+    const n = hovered ?? this.selected
+    const b = n ? this.barOf(n, this.view) : null
+    return b && b.w >= BAR_GRAB_W && this.readable() ? b : null
+  }
+
+  /** Every file's scroll bar: drawn, except the one that can be dragged, which is an element on top. */
+  private drawBars(vb: View) {
+    this.findScrolls()
+    const live = this.barState()
+    const dpr = this.camera.dpr
+    for (const n of this.fileNodes) {
+      if (n.file === live?.id || !this.visible(n, vb)) continue
+      const b = this.barOf(n, vb)
+      if (!b) continue
+      const x = (b.clip.x + b.clip.w - b.w) * dpr
+      const inset = Math.min(2, b.w / 6) * dpr
+      this.shapes.quad(x, b.clip.y * dpr, b.w * dpr, b.clip.h * dpr, rgba(C.scroll, 0.07))
+      this.shapes.quad(x + inset, (b.clip.y + b.top) * dpr, b.w * dpr - inset * 2, b.thumb * dpr, rgba(C.scroll, 0.38))
+    }
+    setStyle(this.bar, 'display', live ? 'block' : 'none')
+    if (!live) return
+    setStyle(this.bar, 'width', px(live.w))
+    setStyle(this.bar, 'height', px(live.clip.h))
+    setStyle(this.bar, 'transform', `translate(${px(live.clip.x + live.clip.w - live.w)}, ${px(live.clip.y)})`)
+    setStyle(this.barThumb, 'height', px(live.thumb))
+    setStyle(this.barThumb, 'transform', `translateY(${px(live.top)})`)
+  }
+
+  /** The pointer over a drawn scroll bar turns it into the one that can be dragged. */
+  private hoverBar(x: number, y: number) {
+    if (!this.a) return
+    const vb = this.view
+    const w = this.camera.toWorld(x, y)
+    const n = this.readable() ? this.fileNodes.find((n) => w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h) : undefined
+    const b = n ? this.barOf(n, vb) : null
+    const id = b && b.w >= BAR_GRAB_W && x >= b.clip.x + b.clip.w - b.w ? b.id : null
+    if (id === this.barHover) return
+    this.barHover = id
+    this.schedule()
+  }
+
+  /** Whether the keyboard is on the map. */
+  get focused(): boolean {
+    return this.host.contains(document.activeElement)
+  }
+
+  /** Puts the keyboard on the map. */
+  focusMap() {
+    this.host.focus({ preventScroll: true, focusVisible: false } as FocusOptions)
+  }
+
+  /** Dragging the thumb scrolls; pressing the track jumps there and drags on. The map sees none of it but the wheel. */
+  private attachBar() {
+    const bar = this.bar
+    bar.className = 'text-scroll'
+    bar.style.display = 'none'
+    bar.appendChild(this.barThumb)
+    this.host.appendChild(bar)
+    /** the drag: which file, and where on the thumb it was grabbed */
+    let drag: { id: number; grab: number } | null = null
+    const move = (e: PointerEvent) => {
+      const b = this.barState()
+      if (!drag || b?.id !== drag.id) return
+      const y = e.clientY - this.host.getBoundingClientRect().top - b.clip.y
+      const room = b.clip.h - b.thumb
+      if (room > 0) this.scrollTo(b.id, b.st, ((y - drag.grab) / room) * this.scrollOf(b.id, b.st).max)
+    }
+    bar.addEventListener('pointerdown', (e) => {
+      e.stopPropagation() // not a pan, nor a click on the file
+      this.focusMap()
+      const b = this.barState()
+      if (e.button !== 0 || !b) return
+      this.hideTip()
+      this.camera.stop()
+      bar.setPointerCapture(e.pointerId)
+      const y = e.clientY - this.host.getBoundingClientRect().top - b.clip.y
+      const onThumb = y >= b.top && y <= b.top + b.thumb
+      drag = { id: b.id, grab: onThumb ? y - b.top : b.thumb / 2 }
+      bar.classList.add('dragging')
+      if (!onThumb) move(e)
+    })
+    bar.addEventListener('pointermove', (e) => {
+      e.stopPropagation() // no name tooltips through it
+      this.hideTip()
+      move(e)
+    })
+    bar.addEventListener('pointerleave', () => {
+      if (drag) return
+      this.barHover = null
+      this.schedule()
+    })
+    const end = () => {
+      drag = null
+      bar.classList.remove('dragging')
+    }
+    bar.addEventListener('pointerup', end)
+    bar.addEventListener('pointercancel', end)
+    bar.addEventListener('lostpointercapture', end)
   }
 
   /**
@@ -1232,7 +1546,7 @@ export class ZoomMap {
       const id = build.queue.shift()!
       const n = this.nodeByFile.get(id)
       if (!n) continue
-      this.text.want(id, (n.w * DIFF_W()) / this.medianFileW, (n.h * DIFF_W()) / this.medianFileW)
+      this.text.want(id, this.wrapOf(n), (n.h * DIFF_W()) / this.medianFileW)
       const t = this.text.get(id)
       if (!t?.block) continue
       glyphs += t.block.glyphs
@@ -1263,7 +1577,7 @@ export class ZoomMap {
       if (generation !== this.buildGeneration) return
       while (queue.length && deadline.timeRemaining() > 1) {
         const n = queue.shift()!
-        this.text.want(n.file!, (n.w * DIFF_W()) / this.medianFileW, (n.h * DIFF_W()) / this.medianFileW)
+        this.text.want(n.file!, this.wrapOf(n), (n.h * DIFF_W()) / this.medianFileW)
       }
       if (queue.length) idle(step)
     }
@@ -1311,10 +1625,7 @@ export class ZoomMap {
     const st = this.textStates.get(file)
     if (!st) return false
     // Up and down belong to the file; at the top or bottom it stops there rather than carrying on into the map.
-    const contentH = this.text.get(file)?.height ?? 0
-    const scroll = Math.max(0, Math.min(st.hidden + st.offset + dy / st.k, Math.max(0, contentH - st.visH)))
-    st.offset = scroll - st.hidden
-    this.schedule()
+    this.scrollTo(file, st, st.hidden + st.offset + dy / st.k)
     return true
   }
 

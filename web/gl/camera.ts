@@ -72,6 +72,11 @@ export class Camera {
     return { x: r.x - margin / scale, y: r.y - margin / scale, scale }
   }
 
+  /** The view a flight is on its way to; where it is now if it isn't flying. */
+  get goal(): { x: number; y: number; scale: number } {
+    return this.flight?.to ?? this
+  }
+
   /** Moves to a view, flying there over `ms` (0 jumps). */
   flyTo(to: { x: number; y: number; scale: number }, ms = 0): void {
     this.velocity = null

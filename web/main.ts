@@ -257,6 +257,7 @@ async function route() {
     return panelMessage(`<h2>Couldn't analyze ${esc(current.head)}</h2><p class="error">${esc(e instanceof Error ? e.message : String(e))}</p>`)
   }
   map.load(analysis)
+  if (document.activeElement === document.body) map.focusMap()
   syncScope()
   void fillWholeRepoText()
   renderPanel()
@@ -533,7 +534,7 @@ async function main() {
     map.highlight = []
     map.highlightEdge = null
     map.focus = false
-    map.fitAll()
+    map.fitWindow()
     setActive(-1)
   }
   window.addEventListener('keydown', (e) => {
@@ -552,6 +553,17 @@ async function main() {
       else if (k === 't') toggleKind('showTests')
       else if (k === 'l') toggleKind('showLocales')
       else if (k === 'd') toggleKind('showDocs')
+    }
+    // → and ←: the next and previous file; ↓ and ↑: the first file of the next and previous section. Only
+    // while the map has the focus: elsewhere the arrows have jobs of their own.
+    const arrow = ({ ArrowRight: [1, false], ArrowLeft: [-1, false], ArrowDown: [1, true], ArrowUp: [-1, true] } as Record<string, [1 | -1, boolean]>)[e.key]
+    if (arrow && !e.defaultPrevented && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+      if (!analysis || !map.focused) return
+      e.preventDefault()
+      if (map.step(...arrow)) {
+        setActive(-1)
+        document.querySelectorAll('.change.active').forEach((x) => x.classList.remove('active'))
+      }
     }
     if ((e.key === 'j' || e.key === 'k') && analysis) {
       const next = Math.max(0, Math.min(allFindings().length - 1, activeFinding + (e.key === 'j' ? 1 : -1)))
@@ -611,7 +623,7 @@ function renderPanel() {
       <div class="src">${esc(a.model.source)}</div>
       ${rules ? `<details><summary>Rules</summary><ul class="rules">${rules}</ul></details>` : ''}
       <ol class="findings">${a.findings.map((f, i) => findingHtml(f, reviewCount() + i)).join('') || '<li class="none">Nothing stands out. The change stays inside the lines the model draws.</li>'}</ol>
-      <div class="hint">j / k step through findings · double-click a box to read it · Esc clears the selection</div>
+      <div class="hint">j / k step through findings · ← / → step through files, ↑ / ↓ through sections · double-click a box to read it · Esc clears the selection</div>
     </section>
     ${changesHtml()}
     ${a.otherChanges.length ? `<section><details><summary>Changed files not on the map (${a.otherChanges.length})</summary><ul class="other">${a.otherChanges.map((o) => `<li><span class="st ${o.status}">${o.status}</span> ${esc(o.path)} <span class="plus">+${o.add}</span> <span class="minus">−${o.del}</span></li>`).join('')}</ul></details></section>` : ''}
