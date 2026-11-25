@@ -19,4 +19,8 @@ function api(): Plugin {
 
 export default defineConfig({
   plugins: [api()],
+  // Served as they are: they're plain modules, and each grammar is fetched only when a file needs it. Prebundling them
+  // would reload the page the first time the worker asks, and copy them into a cache inside the installed app.
+  optimizeDeps: { exclude: ['@shikijs/primitive', '@shikijs/vscode-textmate', '@shikijs/types', '@shikijs/engine-oniguruma', '@shikijs/langs'] },
+  worker: { format: 'es' },
 })

@@ -20,9 +20,10 @@ for (const entry of ['bin', 'server', 'analyzer', 'shared', 'skills', 'web', 'pu
   if (existsSync(path.join(root, entry))) cpSync(path.join(root, entry), path.join(out, entry), { recursive: true })
 }
 
-// Only Vite (and tsx, for `flyover export`/`import`) run in the app; install them at the versions package.json asks for.
+// The page's own dependencies, plus Vite (and tsx, for `flyover export`/`import`), which run in the app; installed at
+// the versions package.json asks for.
 const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
-const dependencies = {}
+const dependencies = { ...pkg.dependencies }
 for (const name of ['vite', 'tsx']) dependencies[name] = pkg.devDependencies[name]
 writeFileSync(path.join(out, 'package.json'), JSON.stringify({ name: 'code-flyover-app', version: pkg.version, private: true, type: 'module', dependencies }, null, 2))
 // --no-bin-links: no symlinks in the bundle (Tauri copies resources as plain files).

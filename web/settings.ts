@@ -6,8 +6,10 @@
 // `settings` at the moment they need a value. Stored and imported/exported by settingsStore.ts, as JSON:
 //   { "codeFlyoverSettings": 1, "settings": { "codeColumns": 100, … } }
 
-export type SettingGroup = 'Code' | 'Map' | 'Zoom and mouse' | 'Window'
-export const GROUPS: SettingGroup[] = ['Code', 'Map', 'Zoom and mouse', 'Window']
+import { cleanShortcut } from './keys.ts'
+
+export type SettingGroup = 'Code' | 'Map' | 'Zoom and mouse' | 'Keyboard' | 'Window'
+export const GROUPS: SettingGroup[] = ['Code', 'Map', 'Zoom and mouse', 'Keyboard', 'Window']
 
 interface Base {
   group: SettingGroup
@@ -27,10 +29,16 @@ export interface BooleanDef extends Base {
   type: 'boolean'
   default: boolean
 }
-export type SettingDef = NumberDef | BooleanDef
+/** A keyboard shortcut (keys.ts). No two commands share one. */
+export interface KeyDef extends Base {
+  type: 'key'
+  default: string
+}
+export type SettingDef = NumberDef | BooleanDef | KeyDef
 
 const num = (group: SettingGroup, label: string, help: string, d: number, min: number, step: number, unit?: string): NumberDef => ({ type: 'number', group, label, help, default: d, min, step, unit })
 const bool = (group: SettingGroup, label: string, help: string, d: boolean): BooleanDef => ({ type: 'boolean', group, label, help, default: d })
+const key = (label: string, help: string, d: string): KeyDef => ({ type: 'key', group: 'Keyboard', label, help, default: d })
 
 export const DEFS = {
   // Code
@@ -59,6 +67,21 @@ export const DEFS = {
   flyMs: num('Zoom and mouse', 'Fly time', 'How long the view takes to move to something you picked. 0 jumps straight there.', 650, 0, 50, 'ms'),
   doubleClickMs: num('Zoom and mouse', 'Double-click speed', 'The longest gap between two clicks that still counts as a double click.', 400, 50, 25, 'ms'),
 
+  // Keyboard
+  keyNextFile: key('Next file', 'Select the next file on the map.', 'ArrowRight'),
+  keyPrevFile: key('Previous file', 'Select the previous file on the map.', 'ArrowLeft'),
+  keyNextSection: key('Next section', 'Select the first file of the next section (the files in one folder).', 'Shift+ArrowRight'),
+  keyPrevSection: key('Previous section', 'Select the first file of the previous section.', 'Shift+ArrowLeft'),
+  keyScrollDown: key('Scroll down', 'Scroll the selected file down.', 'ArrowDown'),
+  keyScrollUp: key('Scroll up', 'Scroll the selected file up.', 'ArrowUp'),
+  keyNextFinding: key('Next finding', 'Go to the next finding of the review.', 'J'),
+  keyPrevFinding: key('Previous finding', 'Go to the previous finding of the review.', 'K'),
+  keyWholeRepo: key('Changes / Whole repo', 'Switch between the files the branch changes and the whole repo.', 'U'),
+  keyCode: key('Show code', 'Show or hide code on the map.', 'C'),
+  keyDocs: key('Show docs', 'Show or hide docs on the map.', 'D'),
+  keyTests: key('Show tests', 'Show or hide tests on the map.', 'T'),
+  keyLocales: key('Show translations', 'Show or hide translations on the map.', 'L'),
+
   // Window
   panelWidth: num('Window', 'Side panel width', 'Dragging the divider sets this too; double-clicking it puts it back to the default.', 400, 260, 10, 'px'),
   panelTextPx: num('Window', 'Side panel text size', 'The size of the side panel’s body text. Headings, tags and code in it grow and shrink with it.', 13, 8, 1, 'px'),
@@ -71,6 +94,9 @@ export type SettingKey = keyof typeof DEFS
 export type Settings = { -readonly [K in SettingKey]: (typeof DEFS)[K]['default'] }
 
 export const KEYS = Object.keys(DEFS) as SettingKey[]
+
+/** The settings that are keyboard shortcuts. */
+export const SHORTCUT_KEYS = KEYS.filter((k) => DEFS[k].type === 'key')
 
 export function defaults(): Settings {
   return Object.fromEntries(KEYS.map((k) => [k, DEFS[k].default])) as Settings
@@ -86,6 +112,7 @@ export const settings: Settings = defaults()
 export function clean(key: SettingKey, v: unknown): Settings[SettingKey] | undefined {
   const d: SettingDef = DEFS[key]
   if (d.type === 'boolean') return typeof v === 'boolean' ? v : undefined
+  if (d.type === 'key') return typeof v === 'string' ? cleanShortcut(v) : undefined
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v
   if (typeof n !== 'number' || !Number.isFinite(n)) return undefined
   const decimals = (String(d.step).split('.')[1] ?? '').length
@@ -126,6 +153,18 @@ export function update(values: Record<string, unknown>, notify = true): { change
   if (settings.codeReadablePx <= settings.codeFadeFromPx) {
     settings.codeReadablePx = Number((settings.codeFadeFromPx + 0.5).toFixed(4))
     if (!changed.includes('codeReadablePx')) changed.push('codeReadablePx')
+  }
+  // A shortcut does one thing: whoever was just given it keeps it (one that was chosen, over a default), and any other
+  // command that had it has none.
+  const rank = (k: SettingKey) => (!(k in values) ? 2 : settings[k] === DEFS[k].default ? 1 : 0)
+  const taken = new Set<unknown>()
+  for (const k of [...SHORTCUT_KEYS].sort((a, b) => rank(a) - rank(b))) {
+    if (settings[k] === '') continue
+    if (!taken.has(settings[k])) taken.add(settings[k])
+    else {
+      ;(settings as Record<SettingKey, unknown>)[k] = ''
+      if (!changed.includes(k)) changed.push(k)
+    }
   }
   if (notify && changed.length) for (const fn of listeners) fn(changed)
   return { changed, rejected }

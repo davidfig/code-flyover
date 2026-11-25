@@ -122,8 +122,12 @@ export interface Analysis {
   uncommitted?: string
   /** an outside AI's review of the branch (`flyover import`): its findings, kept apart from the analyzer's */
   review?: Review
-  /** the repo's own notes on what each file and folder is (`flyover describe`, server/notes.ts), for those at the head */
+  /** the repo's own notes on what each file and folder is (from branch reviews, server/notes.ts), for those at the head */
   notes?: RepoNotes
+  /** files' own opening comments at the head, by path: what a file without a current note says it is (server/headers.ts) */
+  comments?: Record<string, string>
+  /** what folders say they are, by path, and the file that says it: their README or index file (server/headers.ts) */
+  folderComments?: Record<string, { text: string; from: string }>
 }
 
 /** An AI's sentence about what a file or folder is: the repo's, not a branch's. */

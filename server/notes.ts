@@ -7,8 +7,9 @@
 //  - a folder's note to what's in the folder (the names of its files and subfolders). Edits to the files leave it
 //    alone; adding, removing or renaming one marks it out of date.
 //
-// Written by an outside AI through `flyover describe` and `flyover import` (server/review-cli.ts), and by a branch
-// review's "what it is" lines (so those aren't written again for every branch). Kept in ~/.code-flyover/notes/<repo id>.json.
+// They come from a branch review's "what it is" lines (`flyover import`, server/review-cli.ts), so other branches show
+// them too. A file or folder with no note, or an out-of-date one, shows its own opening comment or README instead
+// (server/headers.ts). Kept in ~/.code-flyover/notes/<repo id>.json.
 
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
@@ -51,7 +52,7 @@ function write(repoId: string, data: NotesFile) {
 }
 
 /** Every file at a commit, with its blob (one `git ls-tree` call). */
-export function blobsAt(repoPath: string, sha: string): Map<string, string> {
+function blobsAt(repoPath: string, sha: string): Map<string, string> {
   const out = new Map<string, string>()
   for (const entry of git(repoPath, ['ls-tree', '-r', '-z', sha]).split('\0')) {
     // "<mode> <type> <blob>\t<path>"
@@ -64,7 +65,7 @@ export function blobsAt(repoPath: string, sha: string): Map<string, string> {
 }
 
 /** Each folder at a commit, keyed by what's in it: the names of its files and subfolders, hashed. */
-export function folderKeys(paths: Iterable<string>): Map<string, string> {
+function folderKeys(paths: Iterable<string>): Map<string, string> {
   const entries = new Map<string, Set<string>>()
   for (const p of paths) {
     const parts = p.split('/')
@@ -102,13 +103,6 @@ export function notesAt(repoId: string, repoPath: string, sha: string): RepoNote
   memo.set(key, out)
   while (memo.size > 6) memo.delete(memo.keys().next().value!)
   return out
-}
-
-/** Which files and folders already have a note that's current at this commit. */
-export function describedAt(repoId: string, repoPath: string, sha: string): { files: Set<string>; folders: Set<string> } {
-  const n = notesAt(repoId, repoPath, sha)
-  const fresh = (r: Record<string, RepoNote>) => new Set(Object.entries(r).filter(([, v]) => !v.stale).map(([p]) => p))
-  return { files: fresh(n.files), folders: fresh(n.folders) }
 }
 
 /**

@@ -51,7 +51,7 @@ export class DiffText {
   constructor(private readonly gl: WebGL2RenderingContext, private readonly onChange: () => void) {
     this.renderer = new TextRenderer(gl)
     this.worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
-    this.worker.onmessage = (e: MessageEvent<{ type: 'laid'; id: number; seq: number } & Laid>) => this.received(e.data)
+    this.worker.onmessage = (e: MessageEvent<{ type: 'laid'; id: number; seq: number; again: boolean } & Laid>) => this.received(e.data)
     this.ready = loadFace(gl, '/fonts/liberation-mono/regular', onChange).then(({ face, metrics }) => {
       this.face = face
       this.post({ type: 'init', metrics: metrics as FaceMetrics })
@@ -71,6 +71,7 @@ export class DiffText {
   setFiles(files: { id: number; file: FileInfo }[]) {
     for (const t of this.texts.values()) t.block?.dispose()
     this.texts.clear()
+    this.focused = ''
     this.post({ type: 'files', files })
   }
 
@@ -93,6 +94,16 @@ export class DiffText {
     t.seq = ++this.seq
     this.stats.pending++
     this.post({ type: 'layout', id, width, fillTo: t.fillTo || undefined, seq: t.seq })
+  }
+
+  private focused = ''
+
+  /** The selected file and the files in view, whose better colours the worker does first. */
+  focus(selected: number | null, visible: number[]) {
+    const key = `${selected}:${visible.join()}`
+    if (key === this.focused) return
+    this.focused = key
+    this.post({ type: 'focus', selected, visible })
   }
 
   /** A gap bar's button was clicked. */
@@ -119,8 +130,8 @@ export class DiffText {
     return this.texts.keys()
   }
 
-  private received(r: { id: number; seq: number } & Laid) {
-    this.stats.pending = Math.max(0, this.stats.pending - 1)
+  private received(r: { id: number; seq: number; again: boolean } & Laid) {
+    if (!r.again) this.stats.pending = Math.max(0, this.stats.pending - 1)
     const t = this.texts.get(r.id)
     if (!t || r.seq !== t.seq) return // stale: a newer request is on its way
     const start = performance.now()

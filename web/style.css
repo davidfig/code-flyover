@@ -127,12 +127,17 @@ dialog.settings::backdrop { background: rgba(43, 42, 39, 0.28); }
 .settings-number { width: 84px; padding: 4px 6px; font: inherit; font-variant-numeric: tabular-nums; text-align: right; color: var(--ink); border: 1px solid var(--line); border-radius: 5px; background: white; }
 .settings-number:focus { outline: none; border-color: var(--select); }
 .settings-unit { width: 72px; color: var(--muted); font-size: 12px; }
+/* A keyboard shortcut: press it, then the new keys. */
+.settings-key { min-width: 110px; padding: 4px 10px; font: inherit; color: var(--ink); text-align: center; border: 1px solid var(--line); border-radius: 5px; background: white; cursor: pointer; }
+.settings-key:hover { border-color: #c9c2b2; }
+.settings-key.empty { color: var(--muted); }
+.settings-key.recording { color: var(--select); border-color: var(--select); outline: none; box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.12); }
 /* A switch for the on/off settings. */
 .settings-switch { appearance: none; -webkit-appearance: none; margin: 0; width: 34px; height: 20px; border-radius: 10px; background: #d6d0c2; position: relative; cursor: pointer; transition: background 0.15s; }
 .settings-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); transition: transform 0.15s; }
 .settings-switch:checked { background: var(--select); }
 .settings-switch:checked::after { transform: translateX(14px); }
-.settings-switch:focus-visible, .settings-reset:focus-visible, .settings-button:focus-visible, .settings-nav-item:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; }
+.settings-switch:focus-visible, .settings-key:focus-visible:not(.recording), .settings-reset:focus-visible, .settings-button:focus-visible, .settings-nav-item:focus-visible { outline: 2px solid var(--select); outline-offset: 2px; }
 .settings-none { color: var(--muted); font-style: italic; padding: 24px 0; }
 .settings-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px 10px 20px; border-top: 1px solid var(--line); background: #f6f4ee; }
 .settings-status { flex: 1; min-width: 0; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

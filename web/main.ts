@@ -2,7 +2,8 @@ import type { Analysis, ChangeSet, Finding, RepoNotes, Review } from '../shared/
 import { esc, ZoomMap, type Level } from './map.ts'
 import { roleOf, type MapNode } from './layout.ts'
 import { picker, type Picker } from './picker.ts'
-import { DEFS, LAYOUT_KEYS, onSettingsChange, settings, update, type SettingKey } from './settings.ts'
+import { isNamedKey, shortcutLabel, shortcutOf } from './keys.ts'
+import { DEFS, LAYOUT_KEYS, onSettingsChange, settings, SHORTCUT_KEYS, update, type SettingKey } from './settings.ts'
 import { loadSettings } from './settingsStore.ts'
 import { openSettings } from './settingsDialog.ts'
 import { openWhatsNew } from './whatsNew.ts'
@@ -391,7 +392,8 @@ function settingsChanged(changed: SettingKey[]) {
     syncScope()
     void fillWholeRepoText()
   }
-  const rest = changed.filter((k) => !show.includes(k) && k !== 'panelWidth' && k !== 'panelTextPx' && k !== 'tipTextPx' && k !== 'showPrs')
+  const rest = changed.filter((k) => !show.includes(k) && k !== 'panelWidth' && k !== 'panelTextPx' && k !== 'tipTextPx' && k !== 'showPrs' && !SHORTCUT_KEYS.includes(k))
+  if (changed.some((k) => SHORTCUT_KEYS.includes(k))) syncShortcuts()
   if (rest.length) map.settingsChanged(rest, rest.some((k) => LAYOUT_KEYS.includes(k)))
   if (changed.includes('liveCheckSeconds')) startLiveChecks()
   if (changed.includes('showPrs')) {
@@ -541,6 +543,7 @@ async function main() {
     }
   })
   syncScope()
+  syncShortcuts()
   // ⌘, (Ctrl+, elsewhere), as in every Mac app. The desktop app's menu has it too, and gets there first.
   window.addEventListener('keydown', (e) => {
     if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
@@ -564,30 +567,51 @@ async function main() {
       setActive(-1)
       document.querySelectorAll('.change.active').forEach((x) => x.classList.remove('active'))
     }
-    if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-      const k = e.key.toLowerCase()
-      if (k === 'u') setWholeRepo(!settings.showUnchanged)
-      else if (k === 'c') toggleKind('showCode')
-      else if (k === 't') toggleKind('showTests')
-      else if (k === 'l') toggleKind('showLocales')
-      else if (k === 'd') toggleKind('showDocs')
-    }
-    // → and ←: the next and previous file; ↓ and ↑: the first file of the next and previous section. Only
-    // while the map has the focus: elsewhere the arrows have jobs of their own.
-    const arrow = ({ ArrowRight: [1, false], ArrowLeft: [-1, false], ArrowDown: [1, true], ArrowUp: [-1, true] } as Record<string, [1 | -1, boolean]>)[e.key]
-    if (arrow && !e.defaultPrevented && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-      if (!analysis || !map.focused) return
-      e.preventDefault()
-      if (map.step(...arrow)) {
-        setActive(-1)
-        document.querySelectorAll('.change.active').forEach((x) => x.classList.remove('active'))
-      }
-    }
-    if ((e.key === 'j' || e.key === 'k') && analysis) {
-      const next = Math.max(0, Math.min(allFindings().length - 1, activeFinding + (e.key === 'j' ? 1 : -1)))
-      goToFinding(next)
-    }
+    const shortcut = e.defaultPrevented ? null : shortcutOf(e)
+    const command = shortcut ? SHORTCUT_KEYS.find((k) => settings[k] === shortcut) : undefined
+    // Arrows and the like work only while the map has the focus: elsewhere they have jobs of their own.
+    if (!shortcut || !command || (isNamedKey(shortcut) && !map.focused)) return
+    e.preventDefault()
+    runShortcut(command)
   })
+}
+
+/** Does what a shortcut (a Keyboard setting) stands for. */
+function runShortcut(command: SettingKey) {
+  const step = (by: 1 | -1, section = false) => {
+    if (!analysis || !map.step(by, section)) return
+    setActive(-1)
+    document.querySelectorAll('.change.active').forEach((x) => x.classList.remove('active'))
+  }
+  const finding = (by: 1 | -1) => analysis && goToFinding(Math.max(0, Math.min(allFindings().length - 1, activeFinding + by)))
+  const commands: Partial<Record<SettingKey, () => void>> = {
+    keyNextFile: () => step(1),
+    keyPrevFile: () => step(-1),
+    keyNextSection: () => step(1, true),
+    keyPrevSection: () => step(-1, true),
+    keyScrollDown: () => map.scrollSelected(1),
+    keyScrollUp: () => map.scrollSelected(-1),
+    keyNextFinding: () => finding(1),
+    keyPrevFinding: () => finding(-1),
+    keyWholeRepo: () => setWholeRepo(!settings.showUnchanged),
+    keyCode: () => toggleKind('showCode'),
+    keyDocs: () => toggleKind('showDocs'),
+    keyTests: () => toggleKind('showTests'),
+    keyLocales: () => toggleKind('showLocales'),
+  }
+  commands[command]?.()
+}
+
+/** The shortcuts shown in the header, as they're set now. */
+function syncShortcuts() {
+  const whole = settings.keyWholeRepo ? ` (${shortcutLabel(settings.keyWholeRepo)})` : ''
+  for (const b of scopeButtons()) b.title = (b.dataset.whole === '1' ? 'Every file in the repo' : 'Only the files the branch changes') + whole
+  const keys = { showCode: settings.keyCode, showDocs: settings.keyDocs, showTests: settings.keyTests, showLocales: settings.keyLocales }
+  for (const input of kindInputs()) {
+    const kbd = input.closest('label')!.querySelector('kbd')!
+    kbd.textContent = shortcutLabel(keys[input.dataset.key as KindKey])
+    kbd.hidden = !kbd.textContent
+  }
 }
 
 /** What the branch is compared with: the repo's default base, or any other branch. */

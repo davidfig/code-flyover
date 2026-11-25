@@ -25,4 +25,4 @@ The command is `flyover` (on the PATH after Code Flyover's Install Claude Code S
 5. **Import.** Run `flyover import <file>` in the repo (or pass the repo folder after the file). If it reports dropped hunk ids, uncovered hunks, unknown paths or undescribed files, fix the file and import again. If it says the branch moved, export again and redo the file.
 6. **Report** to the user in a few lines: how many changes and findings, the most serious finding in one sentence, and that the app is already showing them.
 
-Don't commit anything. The import writes only to `~/.code-flyover`. The files' "what it is" lines and the folder sentences also go into the repo's own notes, so other branches show them too; `/flyover-describe` covers the files no branch changed.
+Don't commit anything. The import writes only to `~/.code-flyover`. The files' "what it is" lines and the folder sentences also go into the repo's own notes, so other branches show them too.

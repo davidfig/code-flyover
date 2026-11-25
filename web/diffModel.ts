@@ -7,7 +7,7 @@
 // state just before the hunk.
 
 import type { FileInfo } from '../shared/types.ts'
-import { languageOf, tokenizer, type LineState, type Token } from './highlight.ts'
+import { languageOf, tokenizer, type LineState, type Token, type Tokenizer } from './highlight.ts'
 
 /** Lines one click on an expand button shows. */
 export const STEP = 20
@@ -53,25 +53,51 @@ export interface DiffModel {
   growAll(step: number): boolean
 }
 
-/** The diff of a file with hunks (null when it has none). */
-export function diffModel(f: FileInfo): DiffModel | null {
-  if (!f.hunks || f.hunks.length === 0) return null
-  const tok = tokenizer(languageOf(f.path))
-  const deleted = f.status === 'deleted'
-  // The file at head (or at base, deleted), highlighted as one piece: tokens per line and the state before each.
-  const fileLines = f.text !== undefined ? f.text.split('\n') : null
-  if (fileLines && fileLines[fileLines.length - 1] === '') fileLines.pop()
+/** A file's lines, highlighted: tokens per line and the state before each. */
+export interface Highlighted {
+  tok: Tokenizer
+  tokens: Token[][]
+  before: LineState[]
+}
+
+/** The file at head (or at base, deleted) as lines, where it's stored. */
+export function fileLinesOf(f: FileInfo): string[] | null {
+  if (f.text === undefined) return null
+  const lines = f.text.split('\n')
+  if (lines[lines.length - 1] === '') lines.pop()
+  return lines
+}
+
+/** Highlights lines one at a time, for the caller to run to the end at once or in slices. */
+export function* highlighting(lines: string[], tok: Tokenizer): Generator<void, Highlighted> {
   const tokens: Token[][] = []
   const before: LineState[] = []
-  if (fileLines) {
-    let state: LineState = { in: 'code' }
-    for (const line of fileLines) {
-      before.push(state)
-      const r = tok.line(line, state)
-      tokens.push(r.tokens)
-      state = r.state
-    }
+  let state: LineState = { in: 'code' }
+  for (const line of lines) {
+    before.push(state)
+    const r = tok.line(line, state)
+    tokens.push(r.tokens)
+    state = r.state
+    yield
   }
+  return { tok, tokens, before }
+}
+
+function highlightNow(lines: string[], tok: Tokenizer): Highlighted {
+  const run = highlighting(lines, tok)
+  for (;;) {
+    const r = run.next()
+    if (r.done) return r.value
+  }
+}
+
+/** The diff of a file with hunks (null when it has none), coloured by the quick tokenizer unless it's given better. */
+export function diffModel(f: FileInfo, better?: Highlighted): DiffModel | null {
+  if (!f.hunks || f.hunks.length === 0) return null
+  const deleted = f.status === 'deleted'
+  // The file at head (or at base, deleted), highlighted as one piece: tokens per line and the state before each.
+  const fileLines = fileLinesOf(f)
+  const { tok, tokens, before } = better ?? highlightNow(fileLines ?? [], tokenizer(languageOf(f.path)))
   /** Tokens for a line of the file by its number there, or highlighted alone if the file isn't stored. */
   const fileTokens = (no: number, text: string): Token[] => tokens[no - 1] ?? tok.line(text, { in: 'code' }).tokens
 

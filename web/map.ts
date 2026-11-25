@@ -197,6 +197,8 @@ const BAR_MIN_W = 2
 /** The title bar over the file being read, CSS px (style.css .file-title). A box showing less than three of it has none. */
 const TITLE_H = 26
 const BAR_GRAB_W = 5
+/** How far one press of a scroll shortcut scrolls the selected file, CSS px. */
+const KEY_SCROLL_PX = 60
 
 /** Runs `cb` when the browser is idle (Safari has no requestIdleCallback: a short timeout stands in). */
 function idle(cb: (deadline: { timeRemaining(): number }) => void) {
@@ -735,10 +737,10 @@ export class ZoomMap {
   }
 
   /**
-   * The arrow keys: selects the next (or previous) file in reading order, or with `section` the first file of the next
-   * (or previous) section, a section being the files directly in one folder. Slides the view, at the same zoom, so
-   * the file's top-left corner lands where the last one's was. From a selected folder, its first file (or the one, or
-   * the section, before it); with nothing selected, the first file in view, without moving. False at either end.
+   * Selects the next (or previous) file in reading order, or with `section` the first file of the next (or previous)
+   * section, a section being the files directly in one folder. Slides the view, at the same zoom, so the file's
+   * top-left corner lands where the last one's was. From a selected folder, its first file (or the one, or the
+   * section, before it); with nothing selected, the first file in view, without moving. False at either end.
    */
   step(by: 1 | -1, section = false): boolean {
     if (!this.a) return false
@@ -1037,12 +1039,13 @@ export class ZoomMap {
   private tipHtml(n: MapNode): string | null {
     const review = this.a?.review
     const stale = review && review.headSha !== this.a.headSha ? ', for an older commit' : ''
-    // The repo's own notes (`flyover describe`): what a file or folder is on any branch, marked when it has changed since.
+    // The repo's own notes (from branch reviews): what a file or folder is on any branch, marked when it has changed since.
     const repoNote = (r: RepoNote | undefined, changedSince: string) => (r ? { about: r.about, stale: r.stale ? `, ${changedSince}` : '' } : null)
     if (n.kind === 'file') {
       const path = this.a.files[n.file!].path
       const note = review?.files?.[path]
       const own = repoNote(this.a.notes?.files[path], 'and the file has changed since')
+      const comment = this.a.comments?.[path]
       if (note) {
         const about = note.about || own?.about
         return (
@@ -1052,8 +1055,11 @@ export class ZoomMap {
           `<div class="tw">AI-written${stale}</div>`
         )
       }
-      // The title bar always answers, with how to get a summary if there isn't one; another file's name says nothing.
-      if (!own) return this.reading(n) ? `<div class="tp">${esc(path)}</div><div class="ta">No summary yet. Run /flyover-describe in a Claude Code session.</div>` : null
+      // The comment changes with the file, so it beats a note from before the file changed.
+      if (comment && (!own || own.stale))
+        return `<div class="tp">${esc(path)}</div><div class="ta">${esc(comment)}</div><div class="tw">From the file's opening comment</div>`
+      // The title bar always answers; another file's name says nothing.
+      if (!own) return this.reading(n) ? `<div class="tp">${esc(path)}</div><div class="ta">No summary: the file has no opening comment.</div>` : null
       return `<div class="tp">${esc(path)}</div><div class="ta">${esc(own.about)}</div><div class="tw">AI-written${own.stale}</div>`
     }
     if (n.kind === 'module') {
@@ -1065,6 +1071,9 @@ export class ZoomMap {
     const about = review?.folders?.[n.path]
     if (about) return `<div class="tp">${esc(n.path)}/</div><div class="ta">${esc(about)}</div><div class="tw">AI-written${stale}</div>`
     const own = repoNote(this.a.notes?.folders[n.path], 'and files have been added or removed since')
+    const says = this.a.folderComments?.[n.path]
+    if (says && (!own || own.stale))
+      return `<div class="tp">${esc(n.path)}/</div><div class="ta">${esc(says.text)}</div><div class="tw">From ${esc(says.from)}</div>`
     if (!own) return null
     return `<div class="tp">${esc(n.path)}/</div><div class="ta">${esc(own.about)}</div><div class="tw">AI-written${own.stale}</div>`
   }
@@ -1411,6 +1420,7 @@ export class ZoomMap {
         at: { x: st.originX * dpr, y: st.originY * dpr, scale: k * dpr, alpha: 1, clip: { x: st.clip.x * dpr, y: st.clip.y * dpr, w: st.clip.w * dpr, h: st.clip.h * dpr } },
       })
     }
+    this.text.focus(this.selected?.file ?? null, list.map((l) => l.id))
     this.text.draw(list, viewport)
   }
 
@@ -1537,6 +1547,16 @@ export class ZoomMap {
   /** Puts the keyboard on the map. */
   focusMap() {
     this.host.focus({ preventScroll: true, focusVisible: false } as FocusOptions)
+  }
+
+  /** Scrolls the selected file's text, where it's big enough to read (as the wheel over it does). */
+  scrollSelected(by: 1 | -1) {
+    const n = this.selected
+    if (!this.a || n?.kind !== 'file' || !this.readable()) return
+    const st = this.textStates.get(n.file!)
+    if (!st) return
+    this.hideTip()
+    this.scrollTo(n.file!, st, st.hidden + st.offset + (by * KEY_SCROLL_PX) / st.k)
   }
 
   /** Dragging the thumb scrolls; pressing the track jumps there and drags on. The map sees none of it but the wheel. */

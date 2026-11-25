@@ -4,7 +4,7 @@
 //!   `flyover export` and `flyover import` work in a terminal and for any agent. It goes in ~/.local/bin on macOS and
 //!   Linux (we only report when that folder isn't on your PATH; we don't edit your shell files), and in
 //!   ~/.code-flyover/bin on Windows, which is added to your user PATH.
-//! - The skills: each skills/<name>/SKILL.md in the app's files (/flyover-review, /flyover-describe), copied to
+//! - The skills: each skills/<name>/SKILL.md in the app's files (/flyover-review), copied to
 //!   ~/.claude/skills/<name>/, with the line naming its command pointed at the shim by full path, so the skills work
 //!   whether or not the shim is on the PATH.
 //!
@@ -145,6 +145,19 @@ fn write_skill(app_dir: &Path, home: &Path, name: &str, command: &str) -> Result
     fs::write(&dest, text).map_err(|e| format!("Couldn't write {}: {e}", dest.display()))
 }
 
+/// Removes our copy of a skill the app no longer carries. Only a copy this app wrote: a link, or a file without the
+/// line install puts in, is left alone, and so is a folder with anything else in it.
+fn remove_retired_skill(home: &Path, name: &str) {
+    let dir = home.join(".claude").join("skills").join(name);
+    if dir.symlink_metadata().map(|m| m.file_type().is_symlink()).unwrap_or(true) {
+        return;
+    }
+    let file = dir.join("SKILL.md");
+    if fs::read_to_string(&file).is_ok_and(|t| t.contains("(shortened to `flyover` below)")) && fs::remove_file(&file).is_ok() {
+        let _ = fs::remove_dir(&dir);
+    }
+}
+
 /// Does the install and says what happened, one line per part. `Err` only when nothing useful got done.
 fn install(app_dir: &Path) -> Result<String, String> {
     let home = home()?;
@@ -185,6 +198,7 @@ fn install(app_dir: &Path) -> Result<String, String> {
         }
     };
 
+    remove_retired_skill(&home, "flyover-describe");
     let names = bundled_skills(app_dir);
     if names.is_empty() {
         lines.push(format!("No skills found in {}.", app_dir.join("skills").display()));
@@ -216,7 +230,7 @@ pub fn run(app: &AppHandle, app_dir: PathBuf) {
         let ask = format!(
             "This installs two things, so a Claude Code session can write a review for the map:\n\n\
              • a `flyover` command at {shim}, for `flyover export` and `flyover import`\n\
-             • the Code Flyover skills (/flyover-review and the rest), in {home}{sep}.claude{sep}skills\n\n\
+             • the Code Flyover skill (/flyover-review), in {home}{sep}.claude{sep}skills\n\n\
              Run it again after updating the app.",
             sep = std::path::MAIN_SEPARATOR,
         );

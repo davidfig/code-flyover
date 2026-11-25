@@ -8,6 +8,29 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+### Added
+
+- Hovering a file's name shows its own opening comment, in any of the common languages. Hovering a folder's shows its
+  README's first paragraph, or its index file's opening comment.
+- A Keyboard section in Settings, where you can change or remove each shortcut.
+
+### Changed
+
+- ↓ and ↑ scroll the selected file. Shift with → or ← moves to the next or previous section instead.
+- Code is coloured with VS Code's grammars (through Shiki), so nested template strings, JSX and embedded languages come
+  out right. Files show at once in the old colours and get the better ones moments later.
+
+### Removed
+
+- `flyover describe` and the `/flyover-describe` skill: files' own comments and folders' READMEs do the job now. Notes
+  already written still show until their file changes.
+
+### Fixed
+
+- The app couldn't start its server from a read-only folder, such as a Linux AppImage's.
+- A quote or backtick inside a regex (JavaScript, TypeScript, Vue, Svelte, Astro, Ruby) no longer colours the code after it as a string.
+- `flyover export` and `import` did nothing in the installed app (they looked for a file the app doesn't include).
+
 ## 0.1.6 - 2026-11-24
 
 ### Fixed

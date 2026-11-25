@@ -46,7 +46,7 @@ Then:
 
 1. **Pick a branch** in the header. Branches are listed newest first, with how far ahead of the base they are. Its map is built on the spot, usually in about a second.
 2. **Pick the base** under **compared with** in the side panel. The default is the remote's default branch, such as `origin/main`.
-3. **Fly around.** Hover a change card to outline its files, and click it to zoom there. Double-click any box to read it full width. Press `→`/`←` to move to the next or previous file and `↓`/`↑` for the next or previous section, at the same zoom, `j`/`k` to step through findings and `Esc` to clear the selection. **Fit** resets the view, and **Changes | Whole repo** (or `U`) switches between the files the branch changes and the whole repo. The **Show** list picks which kinds of files are on the map: **Code** and **Docs** (Markdown and text) to start with, plus **Tests** and **Translations** (keys `C`, `D`, `T`, `L`).
+3. **Fly around.** Hover a change card to outline its files, and click it to zoom there. Double-click any box to read it full width. Press `→`/`←` to move to the next or previous file at the same zoom (`Shift` with them for the next or previous section), `↓`/`↑` to scroll the selected file, `j`/`k` to step through findings and `Esc` to clear the selection. **Fit** resets the view, and **Changes | Whole repo** (or `U`) switches between the files the branch changes and the whole repo. The **Show** list picks which kinds of files are on the map: **Code** and **Docs** (Markdown and text) to start with, plus **Tests** and **Translations** (keys `C`, `D`, `T`, `L`). **Settings → Keyboard** changes any of these shortcuts except `Esc`.
 
 A branch checked out in a worktree with uncommitted changes is shown with those changes included. The map stays live: when the branch, its uncommitted files or its base change, it's rebuilt within a few seconds.
 
@@ -94,7 +94,7 @@ flyover import review.json [folder]
 
 ### With Claude Code
 
-A ready-made [Claude Code](https://claude.com/claude-code) skill walks a session through export, review and import. In the desktop app, choose **Install Claude Code Skill…** (in the Code Flyover menu on macOS, File on Windows and Linux). It installs the app's skills (`/flyover-review`, `/flyover-describe`) in `~/.claude/skills/`, and a `flyover` command that runs the app's own copy (`~/.local/bin/flyover` on macOS and Linux; on Windows `~/.code-flyover/bin/flyover.cmd`, added to your PATH). Run it again after updating the app. From a checkout, link the skill in once instead:
+A ready-made [Claude Code](https://claude.com/claude-code) skill walks a session through export, review and import. In the desktop app, choose **Install Claude Code Skill…** (in the Code Flyover menu on macOS, File on Windows and Linux). It installs the `/flyover-review` skill in `~/.claude/skills/`, and a `flyover` command that runs the app's own copy (`~/.local/bin/flyover` on macOS and Linux; on Windows `~/.code-flyover/bin/flyover.cmd`, added to your PATH). Run it again after updating the app. From a checkout, link the skill in once instead:
 
 ```bash
 ln -s "$PWD/skills/flyover-review" ~/.claude/skills/flyover-review
@@ -102,19 +102,9 @@ ln -s "$PWD/skills/flyover-review" ~/.claude/skills/flyover-review
 
 Then, in a Claude Code session in the repo you're reviewing, run `/flyover-review`.
 
-### Notes on every file and folder
+### What each file and folder is
 
-A review describes only the files the branch changes. To put a note on every source file and folder in the repo, shown on hovering its name in any branch, run:
-
-```bash
-flyover describe [folder] [--under <dir>] [--batch <n>]
-```
-
-It prints the next batch of files and folders with no current note, with what to write, and `flyover import` saves the JSON. The notes belong to the repo, not a branch: each is tied to the file's contents (a folder's to its list of files) and marked out of date when that changes, so running it again only redoes what changed. A review's own "what it is" lines go into the same notes. The `flyover-describe` skill runs the batches for you; link it like the review skill:
-
-```bash
-ln -s "$PWD/skills/flyover-describe" ~/.claude/skills/flyover-describe
-```
+Hovering a file's name shows the comment it opens with, in any of the common languages (licence notices and tool directives are skipped). Hovering a folder's shows the first paragraph of its README, or else the opening comment of its index file (`index.ts`, `mod.rs`, `__init__.py` and the like). A review's own "what it is" lines come first while the file hasn't changed since.
 
 ### With another agent
 
@@ -164,7 +154,7 @@ There's no build step: the server is Vite with a small API (`vite.config.ts`, `s
 | `web/` | The map: layout, WebGL rendering, GPU text (`web/text/`), the side panel |
 | `shared/` | Types shared by the server and the page |
 | `src-tauri/` | The desktop app |
-| `skills/` | The Claude Code skills |
+| `skills/` | The Claude Code skill |
 
 [docs/design.md](docs/design.md) explains how the map, the checks and the descriptions work, and why.
 

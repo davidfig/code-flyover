@@ -30,6 +30,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { analyze, onMap } from '../analyzer/analyze.ts'
 import { listFiles, readFiles, snapshot } from '../analyzer/git.ts'
+import { folderComments, openingComments } from './headers.ts'
 import { notesAt } from './notes.ts'
 import { pullNumbers } from './prs.ts'
 import type { Analysis, ChangeSet, Review } from '../shared/types.ts'
@@ -274,6 +275,8 @@ export function analysisFor(repo: Repo, head: string, base: string): Analysis {
   let a = cache.get(key)
   if (!a) {
     a = { ...analyze({ repo: repo.path, head, base, modelsDir: MODELS_DIR, id: `${repo.id}--${head}`, at: at.sha }), ...(at.worktree ? { uncommitted: at.worktree } : {}) }
+    a.comments = openingComments(a, repo.path)
+    a.folderComments = folderComments(a, repo.path)
     cache.set(key, a)
     while (cache.size > MAX_CACHED) cache.delete(cache.keys().next().value!)
   }

@@ -2,7 +2,6 @@
 // flyover [folder]: opens the app on a repo's branches.
 // flyover --serve:   only starts the server (the desktop app runs this, src-tauri/src/lib.rs).
 // flyover export …:  what an outside AI needs to describe and review a branch (server/review-cli.ts)
-// flyover describe …: the next batch of files and folders an outside AI should write the repo's notes for
 // flyover import …:  saves what it wrote, for the app to show
 //
 // Adds the git repo at [folder] (default: the current folder) to the app's list and opens it in the browser. Starts
@@ -13,14 +12,17 @@
 // checkout is what runs.
 
 import { spawn, spawnSync } from 'node:child_process'
+import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-if (process.argv[2] === 'export' || process.argv[2] === 'import' || process.argv[2] === 'describe') {
+if (process.argv[2] === 'export' || process.argv[2] === 'import') {
   // Run from the caller's folder, so relative paths and the checked-out branch are theirs. No server needed.
-  const tsx = path.join(appDir, 'node_modules', '.bin', 'tsx')
-  const r = spawnSync(tsx, [path.join(appDir, 'server', 'review-cli.ts'), ...process.argv.slice(2)], { stdio: 'inherit' })
+  // tsx by its own file: the packaged app's node_modules has no .bin (and on Windows .bin/tsx isn't executable).
+  const tsx = path.join(appDir, 'node_modules', 'tsx', 'dist', 'cli.mjs')
+  const r = spawnSync(process.execPath, [tsx, path.join(appDir, 'server', 'review-cli.ts'), ...process.argv.slice(2)], { stdio: 'inherit' })
+  if (r.error) console.error(`Couldn't run ${process.argv[2]}: ${r.error.message}`)
   process.exit(r.status ?? 1)
 }
 
@@ -45,7 +47,10 @@ const openBrowser = (url) => {
 const alreadyRunning = await running()
 if (!alreadyRunning) {
   const { createServer } = await import('vite')
-  const server = await createServer({ root: appDir, configFile: path.join(appDir, 'vite.config.ts'), server: { port: PORT, strictPort: true, open: false }, logLevel: 'warn' })
+  // Nothing is written in the app's folder: it's read-only in an AppImage and signed on a Mac. Vite would otherwise put
+  // a compiled copy of its config there (`runner` loads it in memory) and a cache.
+  const cacheDir = path.join(os.homedir(), '.code-flyover', 'vite-cache')
+  const server = await createServer({ root: appDir, configFile: path.join(appDir, 'vite.config.ts'), configLoader: 'runner', cacheDir, server: { port: PORT, strictPort: true, open: false }, logLevel: 'warn' })
   await server.listen()
   console.log(`Code Flyover is running at ${origin}/ (Ctrl-C to stop)`)
 }

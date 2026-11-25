@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
     "analyze": "tsx analyzer/cli.ts",
     "app": "node bin/flyover.mjs",
     "changelog:site": "tsx scripts/changelog-page.ts",
@@ -24,5 +25,10 @@
   "private": true,
   "bin": {
     "flyover": "bin/flyover.mjs"
+  },
+  "dependencies": {
+    "@shikijs/engine-oniguruma": "^4.6.0",
+    "@shikijs/langs": "^4.6.0",
+    "@shikijs/primitive": "^4.6.0"
   }
 }

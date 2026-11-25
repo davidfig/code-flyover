@@ -2,6 +2,7 @@
 // Changes apply as they're made and are saved by settingsStore.ts; there's no OK or Cancel. A filter box finds a
 // setting by name or help; Import and Export read and write the same JSON the settings are stored as.
 
+import { isModifier, shortcutLabel, shortcutOf } from './keys.ts'
 import { DEFS, GROUPS, KEYS, onSettingsChange, settings, update, type NumberDef, type SettingKey } from './settings.ts'
 import { openWhatsNew } from './whatsNew.ts'
 import { exportSettings, importText, onSaveError, resetAll, storageName } from './settingsStore.ts'
@@ -86,7 +87,7 @@ export function openSettings(focusKey?: SettingKey) {
     const reset = el('button', 'settings-reset', '↺')
     reset.type = 'button'
     reset.title = 'Back to the default'
-    reset.onclick = () => update({ [key]: def.default })
+    reset.onclick = () => (def.type === 'key' ? setShortcut(key, def.default) : update({ [key]: def.default }))
     const help = el('div', 'settings-help', def.help)
     help.id = `${id}-help`
     const text = el('div', 'settings-text')
@@ -103,6 +104,51 @@ export function openSettings(focusKey?: SettingKey) {
       box.onchange = () => update({ [key]: box.checked })
       control.append(box)
       sync = () => (box.checked = settings[key] as boolean)
+    } else if (def.type === 'key') {
+      // Press it, then the keys to use. Escape or leaving it changes nothing; Delete takes the shortcut away.
+      const b = el('button', 'settings-key')
+      b.type = 'button'
+      b.id = id
+      b.setAttribute('aria-describedby', help.id)
+      let recording = false
+      const record = (on: boolean) => {
+        recording = on
+        b.classList.toggle('recording', on)
+        sync()
+      }
+      b.onclick = () => {
+        b.focus() // WebKit doesn't focus a pressed button
+        record(true)
+        say('Press the new shortcut. Delete removes it; Escape cancels.')
+      }
+      b.onblur = () => {
+        if (!recording) return
+        record(false)
+        where()
+      }
+      b.onkeydown = (e) => {
+        if (!recording || e.key === 'Tab') return
+        e.preventDefault()
+        if (e.key === 'Escape') {
+          record(false)
+          where()
+        } else if (e.key === 'Backspace' || e.key === 'Delete') {
+          record(false)
+          setShortcut(key, '')
+        } else if (!isModifier(e.key)) {
+          const s = shortcutOf(e)
+          if (s === null) return say('That can’t be a shortcut: use a letter, symbol, arrow or function key, with Shift or ⌥ (Alt) if you like.', true)
+          record(false)
+          setShortcut(key, s)
+        }
+      }
+      control.append(b)
+      sync = () => {
+        const s = settings[key] as string
+        b.textContent = recording ? 'Press keys…' : shortcutLabel(s) || 'None'
+        b.classList.toggle('empty', !recording && !s)
+        b.setAttribute('aria-label', `${def.label}: ${b.textContent}`)
+      }
     } else {
       // A box for the number: type any value from the minimum up; the arrow keys and the stepper move it by its step.
       // Set on Enter, on leaving the box, or on a step.
@@ -125,7 +171,7 @@ export function openSettings(focusKey?: SettingKey) {
       const changed = settings[key] !== def.default
       r.classList.toggle('changed', changed)
       reset.hidden = !changed
-      const dflt = def.type === 'number' ? `${fmt(def, def.default)}${def.unit ? ` ${def.unit}` : ''}` : def.default ? 'on' : 'off'
+      const dflt = def.type === 'number' ? `${fmt(def, def.default)}${def.unit ? ` ${def.unit}` : ''}` : def.type === 'key' ? shortcutLabel(def.default) : def.default ? 'on' : 'off'
       reset.setAttribute('aria-label', `Put ${def.label} back to ${dflt}`)
       reset.title = `Back to the default (${dflt})`
     }
@@ -135,6 +181,13 @@ export function openSettings(focusKey?: SettingKey) {
     head.append(text, reset)
     r.append(head, control)
     return r
+  }
+
+  /** Sets a shortcut, and says which command lost it, if one had it. */
+  function setShortcut(key: SettingKey, shortcut: string) {
+    const lost = update({ [key]: shortcut }).changed.filter((k) => k !== key)
+    if (lost.length) say(`${shortcutLabel(shortcut)} was ${DEFS[lost[0]].label}, which has no shortcut now.`)
+    else where()
   }
 
   function applyFilter() {

@@ -13,6 +13,8 @@ export interface Syntax {
   multiline?: string
   /** `"""` and `'''` strings, which run across lines */
   triple?: boolean
+  /** has `/…/` regex literals */
+  regex?: boolean
   /** line comment markers */
   line?: string[]
   /** block comment delimiters */
@@ -52,6 +54,7 @@ export const LANGUAGES: LanguageDef[] = [
         'abstract as async await break case catch class const continue debugger declare default delete do else enum export extends false finally for from function get if implements import in instanceof interface is keyof let namespace new null of private protected public readonly return satisfies set static super switch this throw true try type typeof undefined unique var void while with yield',
       quotes: '"\'`',
       multiline: '`',
+      regex: true,
       ...C_COMMENTS,
     },
   },
@@ -200,6 +203,7 @@ export const LANGUAGES: LanguageDef[] = [
         'BEGIN END alias and begin break case class def defined? do else elsif end ensure false for if in module next nil not or redo rescue retry return self super then true undef unless until when while yield require require_relative attr_reader attr_writer attr_accessor private protected public',
       quotes: '"\'',
       multiline: '"\'',
+      regex: true,
       ...HASH,
     },
   },
@@ -351,7 +355,7 @@ export const LANGUAGES: LanguageDef[] = [
     match: /\.(vue|svelte|astro)$/,
     deps: true,
     code: true,
-    syntax: { keywords: 'import export from default const let var function return if else for of in new class this true false null undefined async await template script style', quotes: '"\'`', multiline: '`', line: ['//'], block: ['/*', '*/'] },
+    syntax: { keywords: 'import export from default const let var function return if else for of in new class this true false null undefined async await template script style', quotes: '"\'`', multiline: '`', regex: true, line: ['//'], block: ['/*', '*/'] },
   },
   {
     id: 'css',

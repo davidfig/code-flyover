@@ -1,9 +1,11 @@
 // Syntax highlighting for diff lines: a small tokenizer, no library.
 //
 // A line becomes a list of tokens (keyword, string, comment, number, type, plain). State carries from line to
-// line, so a block comment or a template string that spans lines stays coloured. It is deliberately simple; a
-// better highlighter can replace `tokenizer()` without the renderer changing, since the renderer only sees tokens.
+// line, so a block comment or a template string that spans lines stays coloured. It is deliberately simple, and fast:
+// it colours a file the moment it's shown, until Shiki (shiki.ts) has done it properly. It's all there is for Markdown
+// and for languages Shiki isn't given a grammar for.
 
+import type { StateStack } from '@shikijs/primitive/textmate'
 import { languageById, languageOf as languageDef, type Syntax } from '../shared/languages.ts'
 
 export type TokenKind = 'plain' | 'keyword' | 'string' | 'comment' | 'number' | 'type' | 'punct'
@@ -18,9 +20,9 @@ export type Language = string
 
 /**
  * Where a line ends up: inside a block comment, or inside a multi-line string with this closing quote. Markdown's:
- * inside a fenced code block (closed by this fence), or inside an HTML comment.
+ * inside a fenced code block (closed by this fence), or inside an HTML comment. Shiki's: its grammar's stack.
  */
-export type LineState = { in: 'code' } | { in: 'comment' } | { in: 'string'; close: string } | { in: 'fence'; close: string } | { in: 'html' }
+export type LineState = { in: 'code' } | { in: 'comment' } | { in: 'string'; close: string } | { in: 'fence'; close: string } | { in: 'html' } | { in: 'grammar'; stack: StateStack }
 
 export interface Tokenizer {
   line(text: string, state: LineState): { tokens: Token[]; state: LineState }
@@ -45,7 +47,7 @@ export function tokenizer(lang: Language): Tokenizer {
 
 function codeTokenizer(syntax: Syntax): Tokenizer {
   const keywords = new Set(syntax.keywords.split(' ').filter(Boolean))
-  const { quotes, multiline = '', triple = false, line = [], block } = syntax
+  const { quotes, multiline = '', triple = false, line = [], block, regex = false } = syntax
   return {
     line(text, state) {
       const tokens: Token[] = []
@@ -88,6 +90,14 @@ function codeTokenizer(syntax: Syntax): Tokenizer {
           push('comment', text.slice(i, end + block[1].length))
           i = end + block[1].length
           continue
+        }
+        if (regex && c === '/' && regexStarts(tokens, rest)) {
+          const end = regexEnd(text, i)
+          if (end > 0) {
+            push('string', text.slice(i, end))
+            i = end
+            continue
+          }
         }
         if (quotes.includes(c)) {
           const q = triple && rest.startsWith(c + c + c) ? c + c + c : c
@@ -138,6 +148,39 @@ function commentStarts(marker: string, text: string, i: number): boolean {
   if (marker === '#') return /[\s;(]/.test(before)
   if (marker === '--') return before !== '-' && !/[\w)\]]/.test(before)
   return true
+}
+
+/** Keywords an expression follows, so a `/` after one opens a regex. Any other word before it is a value, divided. */
+const BEFORE_REGEX = /(^|[^\w$.])(return|typeof|case|in|of|delete|void|throw|new|else|do|instanceof|yield|await|default|extends|if|elsif|unless|when|while|until|and|or|not|then)$/
+
+/** Whether a `/` (with the line from it on in `rest`) opens a regex rather than dividing what came before it. */
+function regexStarts(tokens: Token[], rest: string): boolean {
+  // `/>` ends a JSX tag.
+  if (rest[1] === '>') return false
+  const code = tokens.filter((t) => t.kind !== 'comment')
+  while (code.length && !code[code.length - 1].text.trim()) code.pop()
+  // First on its line: a regex, unless it's a division carried over from the line above.
+  if (!code.length) return !/^\/[\s=]/.test(rest)
+  if (code[code.length - 1].kind === 'string') return false
+  const before = code.map((t) => t.text).join('').trimEnd()
+  // `</` closes a tag, unless there's a space between (`a < /b/`).
+  if (before.endsWith('<') && tokens[tokens.length - 1].text.endsWith('<')) return false
+  // `x++ / 2` and `x! / 2` (a non-null assertion) divide.
+  if (/(\+\+|--|[\w$)\]]!)$/.test(before)) return false
+  return /[([{,;:=<>!&|?+\-*%^~]$/.test(before) || BEFORE_REGEX.test(before)
+}
+
+/** Index just past the regex opening at `from`, flags included; -1 if the line ends first. A `/` in a class doesn't close it. */
+function regexEnd(text: string, from: number): number {
+  let inClass = false
+  for (let i = from + 1; i < text.length; i++) {
+    const c = text[i]
+    if (c === '\\') i++
+    else if (c === '[') inClass = true
+    else if (c === ']') inClass = false
+    else if (c === '/' && !inClass) return i + 1 + /^[a-z]*/.exec(text.slice(i + 1))![0].length
+  }
+  return -1
 }
 
 /** Index just past the closing quote at or after `from`, skipping escaped ones; -1 if the line ends first. */
