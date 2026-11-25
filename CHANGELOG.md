@@ -8,6 +8,8 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+## 0.1.7 - 2026-11-25
+
 ### Added
 
 - Hovering a file's name shows its own opening comment, in any of the common languages. Hovering a folder's shows its

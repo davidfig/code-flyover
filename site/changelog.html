@@ -109,6 +109,15 @@ footer .r{margin-left:auto}
   <main class="log">
     <h1>Changelog</h1>
     <p class="lead">What changed in each release. The app shows the same list under <strong>What’s New</strong>, and updates itself when a new release is out.</p>
+<section class="release" id="v0.1.7"><h3>Version 0.1.7 <time datetime="2026-11-25">25 November 2026</time></h3>
+<h4>Added</h4>
+<ul><li>Hovering a file's name shows its own opening comment, in any of the common languages. Hovering a folder's shows its README's first paragraph, or its index file's opening comment.</li><li>A Keyboard section in Settings, where you can change or remove each shortcut.</li></ul>
+<h4>Changed</h4>
+<ul><li>↓ and ↑ scroll the selected file. Shift with → or ← moves to the next or previous section instead.</li><li>Code is coloured with VS Code's grammars (through Shiki), so nested template strings, JSX and embedded languages come out right. Files show at once in the old colours and get the better ones moments later.</li></ul>
+<h4>Removed</h4>
+<ul><li><code>flyover describe</code> and the <code>/flyover-describe</code> skill: files' own comments and folders' READMEs do the job now. Notes already written still show until their file changes.</li></ul>
+<h4>Fixed</h4>
+<ul><li>The app couldn't start its server from a read-only folder, such as a Linux AppImage's.</li><li>A quote or backtick inside a regex (JavaScript, TypeScript, Vue, Svelte, Astro, Ruby) no longer colours the code after it as a string.</li><li><code>flyover export</code> and <code>import</code> did nothing in the installed app (they looked for a file the app doesn't include).</li></ul></section>
 <section class="release" id="v0.1.6"><h3>Version 0.1.6 <time datetime="2026-11-24">24 November 2026</time></h3>
 <h4>Fixed</h4>
 <ul><li><strong>Check for Updates…</strong> and <strong>Restart to update</strong> failed with &quot;not allowed by ACL&quot;. Versions before this one can't update themselves: download this one once, and updates work from then on.</li></ul></section>
