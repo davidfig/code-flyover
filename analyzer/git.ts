@@ -112,6 +112,40 @@ export function commits(repo: string, base: string, head: string): { sha: string
     })
 }
 
+export interface BranchCommit {
+  sha: string
+  subject: string
+  /** committer date, ISO */
+  date: string
+}
+
+/** A branch's own line of commits past its base, newest first (the commits a merge brought in aren't listed, the merge is). */
+export function branchCommits(repo: string, base: string, head: string): BranchCommit[] {
+  return git(repo, ['log', '--first-parent', '--format=%H%x09%cI%x09%s', `${base}..${head}`])
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => {
+      const [sha, date, ...rest] = l.split('\t')
+      return { sha, date, subject: rest.join('\t') }
+    })
+}
+
+/**
+ * The commit to compare with, to see only what a branch did from `commit` on: the one before it. When the branch merged its
+ * base in later, that's merged into the starting commit too (as a commit no branch points at, like a snapshot), so the
+ * base's changes don't show as the branch's. `mixed`: that merge conflicts, so they do. Null for a commit with no parent.
+ */
+export function startBefore(repo: string, commit: string, base: string): { sha: string; mixed?: true } | null {
+  const run = (args: string[]) => spawnSync('git', ['-C', repo, ...args], { encoding: 'utf8', env: { ...process.env, ...SNAPSHOT_ENV } })
+  const parent = run(['rev-parse', '--verify', '--quiet', `${commit}^1^{commit}`]).stdout.trim()
+  if (!parent) return null
+  if (run(['merge-base', '--is-ancestor', base, parent]).status === 0) return { sha: parent }
+  const merged = run(['merge-tree', '--write-tree', parent, base])
+  if (merged.status !== 0) return { sha: parent, mixed: true }
+  const made = run(['commit-tree', '--no-gpg-sign', merged.stdout.trim(), '-p', parent, '-p', base, '-m', 'Start of the review'])
+  return made.status === 0 ? { sha: made.stdout.trim() } : { sha: parent, mixed: true }
+}
+
 /** The subject of a worktree's snapshot commit: how its uncommitted changes show among the branch's commits. */
 export const UNCOMMITTED = 'Uncommitted changes'
 

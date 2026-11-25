@@ -14,6 +14,8 @@ export interface AnalyzeOptions {
   id?: string
   /** The commit to read as the head, when it isn't `head` itself: a worktree's snapshot (git.snapshot). */
   at?: string
+  /** The commit to compare with, when it isn't where the branch left its base (git.startBefore). */
+  from?: string
 }
 
 export { onMap }
@@ -22,7 +24,8 @@ export function analyze(opts: AnalyzeOptions): Analysis {
   const { repo } = opts
   const repoName = path.basename(repo.replace(/\/$/, ''))
   const headSha = opts.at ?? git.revParse(repo, opts.head)
-  const baseSha = git.mergeBase(repo, git.revParse(repo, opts.base), headSha)
+  const forkSha = git.mergeBase(repo, git.revParse(repo, opts.base), headSha)
+  const baseSha = opts.from ?? forkSha
 
   const headFiles = git.listFiles(repo, headSha)
   const baseFiles = git.listFiles(repo, baseSha)
@@ -49,8 +52,10 @@ export function analyze(opts: AnalyzeOptions): Analysis {
   for (const [p, t] of git.readFiles(repo, headSha, headFiles.filter(isDoc))) headContents.set(p, t)
   const deletedDocs = diffFiles.filter((d) => d.status === 'deleted' && isDoc(d.path)).map((d) => d.path)
   for (const [p, t] of git.readFiles(repo, baseSha, deletedDocs)) baseContents.set(p, t)
-  const modelFile = [REPO_MODEL_FILE, OLD_REPO_MODEL_FILE].find((f) => baseFiles.includes(f))
-  const repoModel = modelFile ? git.readFiles(repo, baseSha, [modelFile]).get(modelFile) : undefined
+  // Always the base's model, even when comparing from a later commit: the branch can't loosen the rules it's checked against.
+  const forkFiles = forkSha === baseSha ? baseFiles : git.listFiles(repo, forkSha)
+  const modelFile = [REPO_MODEL_FILE, OLD_REPO_MODEL_FILE].find((f) => forkFiles.includes(f))
+  const repoModel = modelFile ? git.readFiles(repo, forkSha, [modelFile]).get(modelFile) : undefined
   const { model, noThirdParty } = loadModel(opts.modelsDir, repoName, mapPaths, repoModel)
 
   const files: FileInfo[] = mapPaths.map((p) => {

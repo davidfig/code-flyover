@@ -9,6 +9,8 @@
 export interface PickerItem {
   value: string
   label: string
+  /** What the button says when this is the choice, if not the label. */
+  onButton?: string
   /** Muted text right after the label, on the row and on the button. */
   badge?: string
   /** Muted text on the right of the row (not on the button). */
@@ -97,7 +99,7 @@ export function picker(spec: PickerSpec): Picker {
     set(value, label) {
       current = value
       const item = spec.groups().flatMap((g) => g.items).find((i) => i.value === value)
-      name.textContent = item?.label ?? label ?? value
+      name.textContent = item?.onButton ?? item?.label ?? label ?? value
       if (item?.badge) name.append(' ', el('span', 'picker-badge', item.badge))
     },
     get disabled() { return button.disabled },

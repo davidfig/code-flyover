@@ -88,8 +88,8 @@ interface Repo { id: string; name: string; path: string }
 interface Branch { name: string; sha: string; date: string; subject: string; ahead: number; behind: number; worktree?: string; dirty?: boolean }
 
 let repos: Repo[] = []
-/** What's open: from the URL's hash, #repo=<id>&head=<branch>&base=<ref> (base left out: the repo's default). */
-let current: { repo: Repo; head: string; base: string } | null = null
+/** What's open: from the URL's hash, #repo=<id>&head=<branch>&base=<ref>&since=<commit> (base left out: the repo's default; since: the whole branch). */
+let current: { repo: Repo; head: string; base: string; since: string } | null = null
 let branchList: { repo: string; base: string; branches: Branch[] } | null = null
 const LAST_REPO_KEY = 'semantic-zoom:lastRepo'
 
@@ -101,10 +101,11 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 const hashState = () => new URLSearchParams(location.hash.slice(1))
-function go(repo: string, head?: string, base?: string) {
+function go(repo: string, head?: string, base?: string, since?: string) {
   const p = new URLSearchParams({ repo })
   if (head) p.set('head', head)
   if (base) p.set('base', base)
+  if (since) p.set('since', since)
   location.hash = p.toString()
 }
 
@@ -183,6 +184,53 @@ const branchPicker = picker({
   },
   onPick: (name) => current && go(current.repo.id, name),
 })
+/** Where the review starts: the whole branch, or one of its commits (that one and everything after it). */
+const sincePicker = picker({
+  label: 'Changes since',
+  groups: () => {
+    const list = sinceReady() ? analysis.branchCommits ?? [] : []
+    return [
+      { items: [{ value: '', label: 'All commits' }] },
+      {
+        heading: 'From this commit on',
+        items: list.map((c) => ({
+          value: c.sha,
+          label: c.subject,
+          onButton: c.sha === 'uncommitted' ? 'Uncommitted only' : `Since ${c.subject}`,
+          detail: c.sha === 'uncommitted' ? undefined : `${c.sha.slice(0, 7)} · ${ago(c.date)}`,
+          title: c.subject,
+        })),
+      },
+    ]
+  },
+  onPick: (sha) => current && go(current.repo.id, current.head, current.base === branchList?.base ? undefined : current.base, sha),
+})
+sincePicker.el.id = 'since'
+$('#since').replaceWith(sincePicker.el)
+/** The analysis on hand is of the branch that's open (not the one before it, while a new one is made). */
+const sinceReady = () => !!current && !!analysis && analysisOf === `${current.repo.id} ${current.head} ${current.base}`
+let analysisOf = ''
+function renderSincePicker() {
+  const ready = sinceReady()
+  const n = ready ? analysis.branchCommits?.length ?? 0 : 0
+  sincePicker.disabled = !ready || (n < 2 && !current!.since)
+  sincePicker.set(ready ? current!.since : '', current?.since === 'uncommitted' ? 'Uncommitted only' : undefined)
+}
+/**
+ * What's saved for a branch is about all of it. From a later commit on, hunk numbers differ, so its change descriptions
+ * can't be shown, and only the review's findings about the files that changed since are.
+ */
+function scopeSaved(a: Analysis) {
+  if (!a.since) return
+  a.changes = undefined
+  if (!a.review) return
+  const changed = a.files.filter((f) => f.status !== 'unchanged').map((f) => f.path).concat(a.otherChanges.map((o) => o.path))
+  a.review = {
+    ...a.review,
+    findings: a.review.findings.filter((f) => !f.target?.paths?.length || f.target.paths.some((p) => changed.some((c) => c === p || c.startsWith(p.replace(/\/$/, '') + '/')))),
+  }
+}
+
 repoPicker.el.id = 'repo'
 branchPicker.el.id = 'branch'
 $('#repo').replaceWith(repoPicker.el)
@@ -240,7 +288,8 @@ async function route() {
   const repo = repos.find((r) => r.id === p.get('repo')) ?? repos.find((r) => r.id === lastRepo) ?? repos[0]
   if (p.get('repo') !== repo.id) return go(repo.id)
   try { localStorage.setItem(LAST_REPO_KEY, repo.id) } catch {}
-  current = { repo, head: p.get('head') ?? '', base: p.get('base') ?? '' }
+  current = { repo, head: p.get('head') ?? '', base: p.get('base') ?? '', since: p.get('since') ?? '' }
+  renderSincePicker()
   renderRepoPicker()
   if (branchList?.repo !== repo.id) {
     renderBranchPicker()
@@ -262,20 +311,36 @@ async function route() {
   }
   current.base ||= branchList!.base
   renderBranchPicker()
+  renderSincePicker()
   panelMessage(`<p>Analyzing <b>${esc(current.head)}</b> against <code>${esc(current.base)}</code>…</p>`)
   try {
-    const a = await api<Analysis>(`/api/analysis?${new URLSearchParams({ repo: repo.id, head: current.head, base: current.base })}`)
+    const a = await api<Analysis>(`/api/analysis?${new URLSearchParams({ repo: repo.id, head: current.head, base: current.base, since: current.since })}`)
     if (seq !== routing) return
     analysis = a
+    analysisOf = `${repo.id} ${current.head} ${current.base}`
+    scopeSaved(analysis)
   } catch (e) {
     if (seq !== routing) return
     return panelMessage(`<h2>Couldn't analyze ${esc(current.head)}</h2><p class="error">${esc(e instanceof Error ? e.message : String(e))}</p>`)
   }
+  const gone = sinceGone()
+  renderSincePicker()
   map.load(analysis)
   if (document.activeElement === document.body) map.focusMap()
   syncScope()
   void fillWholeRepoText()
   renderPanel()
+  if (gone) flashNote(gone)
+}
+
+/** The commit the review started from isn't on the branch any more (rebased or amended): back to the whole branch. */
+function sinceGone(): string {
+  if (!current?.since || analysis.since) return ''
+  current.since = ''
+  const p = hashState()
+  p.delete('since')
+  history.replaceState(null, '', '#' + p) // no hashchange: it's already showing
+  return 'The commit you started from isn’t on the branch any more: showing all of it'
 }
 
 /**
@@ -284,14 +349,15 @@ async function route() {
  */
 async function showNewlySaved(): Promise<boolean> {
   if (!current || !analysis) return false
-  const { repo, head, base } = current
+  const { repo, head, base, since } = current
   let s: { changes: ChangeSet | null; review: Review | null; notes?: RepoNotes }
   try {
     s = await api(`/api/saved?${new URLSearchParams({ repo: repo.id, head, base })}`)
   } catch {
     return false
   }
-  if (current?.head !== head || current.base !== base || current.repo.id !== repo.id) return false
+  if (current?.head !== head || current.base !== base || current.since !== since || current.repo.id !== repo.id) return false
+  if (analysis.since) s.changes = null // about the whole branch (scopeSaved)
   const changesNew = (s.changes?.generatedAt ?? null) !== (analysis.changes?.generatedAt ?? null)
   const reviewNew = (s.review?.generatedAt ?? null) !== (analysis.review?.generatedAt ?? null)
   // The repo's notes only feed the tooltips: taken in quietly (the map reads them when a tooltip opens).
@@ -303,6 +369,7 @@ async function showNewlySaved(): Promise<boolean> {
   }
   analysis.changes = s.changes ?? undefined
   analysis.review = s.review ?? undefined
+  scopeSaved(analysis)
   if (changesNew) map.setChanges(analysis.changes)
   const panel = $('#panel-body')
   const scroll = panel.scrollTop
@@ -334,11 +401,11 @@ async function stayLive() {
   if (!current || !analysis || refreshing) return
   refreshing = true
   try {
-    const { repo, head, base } = current
+    const { repo, head, base, since } = current
     const seq = routing
     let at: { head: string | null; base: string | null }
     try {
-      at = await api(`/api/commits?${new URLSearchParams({ repo: repo.id, head, base })}`)
+      at = await api(`/api/commits?${new URLSearchParams({ repo: repo.id, head, base, since })}`)
     } catch {
       return
     }
@@ -347,13 +414,16 @@ async function stayLive() {
     if (at.head && at.base && (at.head !== analysis.headSha || at.base !== analysis.baseSha)) {
       let a: Analysis
       try {
-        a = await api<Analysis>(`/api/analysis?${new URLSearchParams({ repo: repo.id, head, base })}`)
+        a = await api<Analysis>(`/api/analysis?${new URLSearchParams({ repo: repo.id, head, base, since })}`)
       } catch {
         return
       }
       if (seq !== routing) return
       const moved = a.headSha !== analysis.headSha
       analysis = a
+      scopeSaved(analysis)
+      const gone = sinceGone()
+      renderSincePicker()
       const panel = $('#panel-body')
       const scroll = panel.scrollTop
       map.load(analysis)
@@ -361,7 +431,7 @@ async function stayLive() {
       void fillWholeRepoText()
       renderPanel()
       panel.scrollTop = scroll
-      flashNote(!moved ? `Updated: ${base} moved to ${a.baseSha.slice(0, 7)}` : a.uncommitted ? `Updated: ${head}’s uncommitted changes` : `Updated to ${head}’s new commit ${a.headSha.slice(0, 7)}`)
+      flashNote(gone ? gone : !moved ? `Updated: ${base} moved to ${a.baseSha.slice(0, 7)}` : a.uncommitted ? `Updated: ${head}’s uncommitted changes` : `Updated to ${head}’s new commit ${a.headSha.slice(0, 7)}`)
       void loadBranches(repo).then(renderBranchPicker, () => {})
       return
     }
@@ -639,6 +709,15 @@ function commitCount(a: Analysis): string {
   return n ? `${commits} and ${changes}` : changes
 }
 
+/** What part of the branch is shown, when it isn't all of it. */
+function sinceHtml(a: Analysis): string {
+  if (!a.since) return ''
+  const c = a.branchCommits?.find((x) => x.sha === a.since!.commit)
+  const what = a.since.commit === 'uncommitted' ? 'Only the uncommitted changes' : `Only what changed from <code>${esc(a.since.commit.slice(0, 7))}</code> ${esc(c?.subject ?? '')} on`
+  const mixed = a.since.mixed ? ` Changes merged in from ${esc(a.base)} since then are shown too.` : ''
+  return `<p class="hint">${what}.${mixed}</p>`
+}
+
 function renderPanel() {
   const a = analysis
   const changed = a.files.filter((f) => f.status !== 'unchanged')
@@ -654,8 +733,9 @@ function renderPanel() {
       <h1>${esc(a.title)}</h1>
       <div id="newer" class="newer" hidden></div>
       <div class="sub"><b>${esc(a.repo)}</b> · ${esc(a.head)} compared with ${baseSelect()} · ${commitCount(a)}</div>
+      ${sinceHtml(a)}
       <div class="stats"><span>${source.length} source files</span><span class="plus">+${add}</span><span class="minus">−${del}</span>${muted.length ? `<span title="Tests, translations, docs and generated files: on the map but muted">${muted.length} tests, translations, docs</span>` : ''}${a.otherChanges.length ? `<span>${a.otherChanges.length} other files</span>` : ''}</div>
-      ${changed.length || a.otherChanges.length ? '' : `<p class="hint">No changes against ${esc(a.base)}: the map shows the whole repo.</p>`}
+      ${changed.length || a.otherChanges.length ? '' : `<p class="hint">No changes ${a.since ? 'since then' : `against ${esc(a.base)}`}: the map shows the whole repo.</p>`}
       <details><summary>Commits</summary><ul class="commits">${commits}</ul></details>
     </section>
     ${reviewHtml()}
@@ -692,6 +772,7 @@ function changeFiles(i: number): string[] {
 
 function changesHtml() {
   const cs = analysis.changes
+  if (!cs && analysis.since) return `<section><h2>What changed</h2><p class="none">AI descriptions cover the whole branch. Choose All commits to see them.</p></section>`
   if (!cs)
     return `<section><h2>What changed</h2><p class="none">No AI descriptions for this branch. In a Claude Code session in this repo, run <code>/flyover-review</code>; they appear here when you come back.</p></section>`
   const items = cs.items
@@ -738,11 +819,13 @@ function reviewHtml() {
   if (!r) return `<section><h2>AI review</h2><p class="none">None yet. In a Claude Code session in this repo, run <code>/flyover-review</code>; it appears here when you come back.</p></section>`
   const count = (sev: string) => r.findings.filter((f) => f.severity === sev).length
   const stale = r.headSha !== analysis.headSha ? `<p class="none">This reviews an older commit of the branch (${esc(r.headSha.slice(0, 7))}).</p>` : ''
+  const scoped = analysis.since ? `<p class="none">Only findings about the files shown, and ones about no file in particular.</p>` : ''
   const unknown = r.unknownPaths.length ? `<p class="none">It also named paths that aren't on the map: ${r.unknownPaths.map((p) => `<code>${esc(p)}</code>`).join(', ')}</p>` : ''
   return `
     <section>
       <h2>AI review <span class="tag ai" title="Written by ${esc(r.by)} on ${esc(r.generatedAt.slice(0, 16).replace('T', ' '))}. A judgement, not a check: it can be wrong.">AI-written</span> <span class="chips">${chip('violation', count('violation'), true)}${chip('warning', count('warning'), true)}${chip('info', count('info'), true)}</span></h2>
       ${stale}
+      ${scoped}
       <ol class="findings">${r.findings.map((f, i) => findingHtml(f, i)).join('') || '<li class="none">The reviewer found nothing to report.</li>'}</ol>
       ${unknown}
     </section>`

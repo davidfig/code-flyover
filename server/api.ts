@@ -9,6 +9,7 @@
 // GET    /api/branches?repo=<id>                      its local branches, newest first, and the default base
 // GET    /api/prs?repo=<id>                           its branches' GitHub pull request numbers (asks GitHub, through git)
 // GET    /api/analysis?repo=<id>&head=<ref>&base=<ref> the analysis (made now, or from memory), with saved descriptions and review
+//        &since=<commit|uncommitted>                  (analysis and commits) only what the branch did from that commit on
 // GET    /api/texts?repo=<id>&sha=<commit>            the text of every file the map can show at that commit (Whole repo)
 // GET    /api/saved?repo=<id>&head=<ref>&base=<ref>    its saved descriptions, review and repo notes alone (the page checks for new ones)
 // GET    /api/commits?repo=<id>&head=<ref>&base=<ref>  the commits the analysis would read now (the page checks for new ones)
@@ -29,7 +30,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { analyze, onMap } from '../analyzer/analyze.ts'
-import { listFiles, readFiles, snapshot } from '../analyzer/git.ts'
+import { branchCommits, listFiles, readFiles, snapshot, startBefore, type BranchCommit } from '../analyzer/git.ts'
 import { folderComments, openingComments } from './headers.ts'
 import { notesAt } from './notes.ts'
 import { pullNumbers } from './prs.ts'
@@ -202,6 +203,37 @@ const mergeBaseOf = (repo: Repo, base: string, headSha: string) => {
   return tryGit(repo.path, ['merge-base', baseSha, headSha]) ?? baseSha
 }
 
+/** What an analysis reads: the head, the commit it's compared with, and the branch's commits the review can start from. */
+interface Range {
+  head: { sha: string; worktree?: string }
+  baseSha: string
+  commits: BranchCommit[]
+  since?: { commit: string; mixed?: true }
+}
+
+/** `since` is one of the branch's commits, or "uncommitted". One the branch no longer has (rebased away) is ignored. */
+function rangeOf(repo: Repo, headName: string, base: string, since?: string | null): Range {
+  const head = headOf(repo, headName)
+  const fork = mergeBaseOf(repo, base, head.sha)
+  const commits = branchCommits(repo.path, fork, head.sha)
+  // The snapshot's commit id changes with every edit, so it goes by a name.
+  if (head.worktree && commits.length) commits[0] = { ...commits[0], sha: 'uncommitted', date: '' }
+  let commit: string | undefined
+  if (since === 'uncommitted') {
+    // Nothing uncommitted (any more): no changes to show, until there are.
+    if (!head.worktree) return { head, baseSha: head.sha, commits, since: { commit: since } }
+    commit = head.sha
+  } else if (since) commit = commits.find((c) => c.sha === since)?.sha
+  const start = commit ? startBefore(repo.path, commit, fork) : null
+  if (!start || !since) return { head, baseSha: fork, commits }
+  return { head, baseSha: start.sha, commits, since: { commit: since, ...(start.mixed ? { mixed: true } : {}) } }
+}
+
+const sinceParam = (v: string | null) => {
+  if (v && v !== 'uncommitted' && !/^[0-9a-f]{40,64}$/.test(v)) throw new HttpError(400, `Not a commit: ${v}`)
+  return v
+}
+
 export function branches(repo: Repo): { base: string; branches: Branch[] } {
   const base = defaultBase(repo.path)
   const checkedOut = worktrees(repo)
@@ -267,14 +299,13 @@ function codeTexts(repo: Repo, sha: string): Map<string, string> {
   return texts
 }
 
-export function analysisFor(repo: Repo, head: string, base: string): Analysis {
-  const at = headOf(repo, head)
-  const baseSha = mergeBaseOf(repo, base, at.sha)
+export function analysisFor(repo: Repo, head: string, base: string, sinceCommit?: string | null): Analysis {
+  const { head: at, baseSha, commits, since } = rangeOf(repo, head, base, sinceCommit)
   // The stored analysis carries the head and base names and an id made from them, so they're part of the key.
-  const key = JSON.stringify([repo.id, head, base, at.sha, baseSha])
+  const key = JSON.stringify([repo.id, head, base, at.sha, baseSha, since ?? null])
   let a = cache.get(key)
   if (!a) {
-    a = { ...analyze({ repo: repo.path, head, base, modelsDir: MODELS_DIR, id: `${repo.id}--${head}`, at: at.sha }), ...(at.worktree ? { uncommitted: at.worktree } : {}) }
+    a = { ...analyze({ repo: repo.path, head, base, modelsDir: MODELS_DIR, id: `${repo.id}--${head}`, at: at.sha, from: since ? baseSha : undefined }), branchCommits: commits, ...(since ? { since } : {}), ...(at.worktree ? { uncommitted: at.worktree } : {}) }
     a.comments = openingComments(a, repo.path)
     a.folderComments = folderComments(a, repo.path)
     cache.set(key, a)
@@ -471,7 +502,7 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (route === 'GET /analysis') {
       const repo = repoById(q.get('repo'))
-      return send(200, analysisFor(repo, need(q.get('head'), 'head'), need(q.get('base') ?? defaultBase(repo.path), 'base')))
+      return send(200, analysisFor(repo, need(q.get('head'), 'head'), need(q.get('base') ?? defaultBase(repo.path), 'base'), sinceParam(q.get('since'))))
     }
     if (route === 'GET /texts') {
       const repo = repoById(q.get('repo'))
@@ -481,9 +512,9 @@ export async function handle(req: IncomingMessage, res: ServerResponse) {
     }
     if (route === 'GET /commits') {
       const repo = repoById(q.get('repo'))
-      // As the analysis reads them: the head's snapshot when it has uncommitted changes, and the merge-base.
-      const at = headOf(repo, need(q.get('head'), 'head'))
-      return send(200, { head: at.sha, base: mergeBaseOf(repo, need(q.get('base') ?? defaultBase(repo.path), 'base'), at.sha) })
+      // As the analysis reads them: the head's snapshot when it has uncommitted changes, and the merge-base or the start.
+      const r = rangeOf(repo, need(q.get('head'), 'head'), need(q.get('base') ?? defaultBase(repo.path), 'base'), sinceParam(q.get('since')))
+      return send(200, { head: r.head.sha, base: r.baseSha })
     }
     if (route === 'GET /saved') {
       const repo = repoById(q.get('repo'))

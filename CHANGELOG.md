@@ -8,6 +8,13 @@ its date and start a fresh Unreleased above it.
 
 ## Unreleased
 
+## 0.1.8 - 2026-11-25
+
+### Added
+
+- A list of the branch's commits in the header. Pick one to see only what changed from that commit on, as it is on the
+  branch now, or pick just the uncommitted changes.
+
 ## 0.1.7 - 2026-11-25
 
 ### Added

@@ -107,6 +107,10 @@ export interface Analysis {
   baseSha: string
   title: string
   commits: { sha: string; subject: string }[]
+  /** the branch's commits past its base, newest first, whatever `since` says: what the review can start from */
+  branchCommits?: { sha: string; subject: string; date: string }[]
+  /** only what the branch did from this commit on is shown; `mixed`: changes merged in from the base show too */
+  since?: { commit: string; mixed?: true }
   generatedAt: string
   model: ArchitectureModel
   files: FileInfo[]
